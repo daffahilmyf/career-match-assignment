@@ -63,6 +63,43 @@ def test_candidate_endpoint_rejects_pdf_larger_than_configured_limit(monkeypatch
     assert response.json()["detail"] == "resume_pdf exceeds max size of 8 bytes"
 
 
+
+def test_candidate_endpoint_openapi_documents_mutually_exclusive_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _build_client(monkeypatch)
+
+    operation = client.app.openapi()["paths"]["/api/v1/candidate"]["post"]
+    multipart_schema = operation["requestBody"]["content"]["multipart/form-data"]["schema"]
+
+    assert operation["description"] == (
+        "Submit exactly one resume source as multipart form data: either `resume_text` "
+        "or `resume_pdf`."
+    )
+    assert multipart_schema["oneOf"] == [
+        {
+            "type": "object",
+            "required": ["resume_text"],
+            "properties": {
+                "resume_text": {
+                    "type": "string",
+                    "description": "Plain text resume content.",
+                }
+            },
+        },
+        {
+            "type": "object",
+            "required": ["resume_pdf"],
+            "properties": {
+                "resume_pdf": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "PDF resume upload.",
+                }
+            },
+        },
+    ]
+
 def test_matches_request_strips_and_validates_jd_sources() -> None:
     payload = MatchesCreateRequest(
         candidate_id="cand-1",

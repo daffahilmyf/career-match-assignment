@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 import re
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
@@ -147,10 +147,70 @@ def create_app() -> FastAPI:
     def health_check() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/api/v1/candidate", response_model=CandidateCreateResponse)
+    @app.post(
+        "/api/v1/candidate",
+        response_model=CandidateCreateResponse,
+        summary="Create candidate from resume text or PDF",
+        description=(
+            "Submit exactly one resume source as multipart form data: either `resume_text` "
+            "or `resume_pdf`."
+        ),
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "multipart/form-data": {
+                        "schema": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "required": ["resume_text"],
+                                    "properties": {
+                                        "resume_text": {
+                                            "type": "string",
+                                            "description": "Plain text resume content.",
+                                        }
+                                    },
+                                },
+                                {
+                                    "type": "object",
+                                    "required": ["resume_pdf"],
+                                    "properties": {
+                                        "resume_pdf": {
+                                            "type": "string",
+                                            "format": "binary",
+                                            "description": "PDF resume upload.",
+                                        }
+                                    },
+                                },
+                            ]
+                        },
+                        "examples": {
+                            "resume_text": {
+                                "summary": "Resume text",
+                                "value": {
+                                    "resume_text": "Jane Doe\nSkills: Python, PostgreSQL",
+                                },
+                            },
+                            "resume_pdf": {
+                                "summary": "Resume PDF",
+                                "description": "Upload a PDF file using the `resume_pdf` field.",
+                            },
+                        },
+                    }
+                },
+            }
+        },
+    )
     async def create_candidate(
-        resume_text: str | None = Form(None),
-        resume_pdf: UploadFile | None = File(None),
+        resume_text: Annotated[
+            str | None,
+            Form(description="Resume text. Provide this or `resume_pdf`, but not both."),
+        ] = None,
+        resume_pdf: Annotated[
+            UploadFile | None,
+            File(description="Resume PDF. Provide this or `resume_text`, but not both."),
+        ] = None,
     ) -> CandidateCreateResponse:
         pdf_bytes: bytes | None = None
         if resume_pdf is not None:

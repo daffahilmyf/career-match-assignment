@@ -31,7 +31,7 @@ def test_full_flow() -> None:
     client = TestClient(create_app())
 
     candidate_payload = {"resume_text": "Jane Doe\nSkills: Python, PostgreSQL"}
-    candidate_resp = client.post("/api/v1/candidate", json=candidate_payload)
+    candidate_resp = client.post("/api/v1/candidate", data=candidate_payload)
     assert candidate_resp.status_code == 200
     candidate_id = candidate_resp.json()["candidate_id"]
 

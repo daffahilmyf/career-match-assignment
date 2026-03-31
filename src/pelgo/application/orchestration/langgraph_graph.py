@@ -217,6 +217,24 @@ def _heuristic_next_step(state: AgentState, settings: AppSettings) -> str:
     return "assemble_result"
 
 
+
+def _describe_jd_url_failure(job_input: str, exc: Exception) -> str:
+    if isinstance(exc, requests.Timeout):
+        return f"JD URL fetch timed out for {job_input}. Provide raw JD text or retry later."
+    if isinstance(exc, ValidationError):
+        return f"JD URL extraction returned invalid structured output for {job_input}. Provide raw JD text instead."
+    if isinstance(exc, requests.HTTPError):
+        response = exc.response
+        if response is not None:
+            status_code = response.status_code
+            if status_code == 403:
+                return f"JD URL fetch was blocked by the remote site (HTTP 403) for {job_input}. Provide raw JD text instead."
+            if status_code == 404:
+                return f"JD URL could not be found (HTTP 404) for {job_input}."
+            return f"JD URL fetch failed with HTTP {status_code} for {job_input}."
+    if isinstance(exc, requests.RequestException):
+        return f"JD URL fetch failed for {job_input}: {exc}"
+    return f"JD URL extraction failed for {job_input}: {exc}"
 def _plan_next_step(llm: LLMClient | None, state: AgentState, settings: AppSettings) -> str:
     heuristic = _heuristic_next_step(state, settings)
     if llm is None:
@@ -273,7 +291,7 @@ def build_graph(tools: ToolRegistry, settings: AppSettings, llm: LLMClient | Non
         except Exception as exc:
             _bump_fallbacks(state)
             if job_input.startswith(("http://", "https://")):
-                raise RuntimeError(f"JD URL extraction failed for {job_input}") from exc
+                raise RuntimeError(_describe_jd_url_failure(job_input, exc)) from exc
             state["requirements"] = ExtractJDRequirementsOutput(
                 required_skills=[],
                 nice_to_have_skills=[],
@@ -515,3 +533,5 @@ def build_graph(tools: ToolRegistry, settings: AppSettings, llm: LLMClient | Non
 
     graph.set_entry_point("plan")
     return graph
+
+

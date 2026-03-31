@@ -45,7 +45,6 @@ class FakeLLM:
         return self._call_count
 
 
-
 @dataclass(frozen=True)
 class FailingExtractTool:
     name = "extract_jd_requirements"
@@ -54,6 +53,30 @@ class FailingExtractTool:
 
     def __call__(self, payload: ExtractJDRequirementsInput) -> ExtractJDRequirementsOutput:
         raise requests.Timeout("jd fetch timed out")
+
+
+@dataclass(frozen=True)
+class InvalidExtractTool:
+    name = "extract_jd_requirements"
+    input_model = ExtractJDRequirementsInput
+    output_model = ExtractJDRequirementsOutput
+
+    def __call__(self, payload: ExtractJDRequirementsInput):
+        return {"required_skills": ["python"]}
+
+
+@dataclass(frozen=True)
+class ForbiddenExtractTool:
+    name = "extract_jd_requirements"
+    input_model = ExtractJDRequirementsInput
+    output_model = ExtractJDRequirementsOutput
+
+    def __call__(self, payload: ExtractJDRequirementsInput) -> ExtractJDRequirementsOutput:
+        response = requests.Response()
+        response.status_code = 403
+        response.url = payload.job_url_or_text
+        raise requests.HTTPError("403 Client Error", response=response)
+
 
 @dataclass(frozen=True)
 class ExtractTool:
@@ -119,7 +142,6 @@ class EmptyPrioritiseTool:
         return PrioritiseSkillGapsOutput(ranked_skills=[])
 
 
-
 @dataclass(frozen=True)
 class FailingResearchTool:
     name = "research_skill_resources"
@@ -128,6 +150,7 @@ class FailingResearchTool:
 
     def __call__(self, payload: ResearchSkillResourcesInput) -> ResearchSkillResourcesOutput:
         raise requests.Timeout("research timed out")
+
 
 @dataclass(frozen=True)
 class ResearchTool:
@@ -294,7 +317,7 @@ def test_unresearched_prioritized_gaps_get_fallback_resources():
     assert str(learning_plan[2].resources[0].url).startswith("https://ocw.mit.edu/search/?q=")
 
 
-def test_jd_url_extraction_failure_raises_instead_of_completing():
+def test_jd_url_timeout_failure_has_explicit_message():
     tools = {
         "extract_jd_requirements": FailingExtractTool(),
         "score_candidate_against_requirements": ScoreTool(ConfidenceLevel.high, []),
@@ -304,11 +327,52 @@ def test_jd_url_extraction_failure_raises_instead_of_completing():
     settings = AppSettings()
     graph = build_graph(tools, settings, llm=None).compile()
 
-    with pytest.raises(RuntimeError, match="JD URL extraction failed"):
+    with pytest.raises(RuntimeError, match="JD URL fetch timed out"):
         graph.invoke(
             {
-                "job_id": "job-url-fail",
+                "job_id": "job-url-timeout",
                 "candidate_profile": '{"skills": ["python"], "years_experience": 6}',
                 "job_input": "https://example.com/jobs/backend",
             }
         )
+
+
+def test_jd_url_invalid_output_has_explicit_message():
+    tools = {
+        "extract_jd_requirements": InvalidExtractTool(),
+        "score_candidate_against_requirements": ScoreTool(ConfidenceLevel.high, []),
+        "prioritise_skill_gaps": PrioritiseTool(),
+        "research_skill_resources": ResearchTool(),
+    }
+    settings = AppSettings()
+    graph = build_graph(tools, settings, llm=None).compile()
+
+    with pytest.raises(RuntimeError, match="invalid structured output"):
+        graph.invoke(
+            {
+                "job_id": "job-url-invalid-output",
+                "candidate_profile": '{"skills": ["python"], "years_experience": 6}',
+                "job_input": "https://example.com/jobs/backend",
+            }
+        )
+
+
+def test_jd_url_blocked_site_has_explicit_message():
+    tools = {
+        "extract_jd_requirements": ForbiddenExtractTool(),
+        "score_candidate_against_requirements": ScoreTool(ConfidenceLevel.high, []),
+        "prioritise_skill_gaps": PrioritiseTool(),
+        "research_skill_resources": ResearchTool(),
+    }
+    settings = AppSettings()
+    graph = build_graph(tools, settings, llm=None).compile()
+
+    with pytest.raises(RuntimeError, match=r"blocked by the remote site \(HTTP 403\)"):
+        graph.invoke(
+            {
+                "job_id": "job-url-forbidden",
+                "candidate_profile": '{"skills": ["python"], "years_experience": 6}',
+                "job_input": "https://example.com/jobs/backend",
+            }
+        )
+
