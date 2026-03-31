@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import ClassVar, Iterable
 from urllib.parse import quote_plus
 
@@ -27,6 +28,13 @@ from pelgo.ports.llm import LLMClient
 
 DEFAULT_TIMEOUT_SECONDS = 10
 MAX_RESOURCES = 3
+
+PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "extract_jd_requirements.txt"
+
+
+def _load_prompt(job_description: str) -> str:
+    template = PROMPT_PATH.read_text(encoding="utf-8")
+    return template.replace("{{job_description}}", job_description)
 
 
 def _is_url(text: str) -> bool:
@@ -113,12 +121,21 @@ def _extract_skills_from_text(text: str) -> tuple[list[str], list[str]]:
     return required_skills, nice_skills
 
 
-def _llm_extract_prompt(text: str) -> str:
-    return (
-        "Extract job requirements into the required schema. "
-        "Return required_skills, nice_to_have_skills, seniority_level, domain, responsibilities.\n\n"
-        f"Job description:\n{text}"
-    )
+def _normalize_skill_list(skills: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for skill in skills:
+        cleaned = re.sub(r"\(.*?\)", "", skill).strip().lower()
+        if not cleaned:
+            continue
+        if any(token in cleaned for token in ["year", "years", "+", "experience"]):
+            continue
+        cleaned = re.sub(r"[^a-z0-9+.#-]+", " ", cleaned).strip()
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        normalized.append(cleaned)
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -130,28 +147,20 @@ class ExtractJDRequirementsTool:
     llm: LLMClient | None = None
 
     def __call__(self, payload: ExtractJDRequirementsInput) -> ExtractJDRequirementsOutput:
+        if self.llm is None:
+            raise RuntimeError("LLM client is required for JD extraction")
         text = payload.job_url_or_text
         if _is_url(text):
             text = _fetch_url(text, self.timeout_seconds)
         cleaned = _clean_text(text)
-        if self.llm is not None:
-            prompt = _llm_extract_prompt(cleaned)
-            return self.llm.complete_json(prompt, ExtractJDRequirementsOutput)
-        required_skills, nice_skills = _extract_skills_from_text(cleaned)
-        seniority = _extract_seniority(cleaned)
-        responsibilities = _extract_responsibilities(cleaned)
-        domain = "general"
-        domain_candidates = ["data", "backend", "frontend", "machine learning", "ai"]
-        for candidate in domain_candidates:
-            if candidate in cleaned.lower():
-                domain = candidate
-                break
+        prompt = _load_prompt(cleaned)
+        extracted = self.llm.complete_json(prompt, ExtractJDRequirementsOutput)
         return ExtractJDRequirementsOutput(
-            required_skills=required_skills,
-            nice_to_have_skills=nice_skills,
-            seniority_level=seniority,
-            domain=domain,
-            responsibilities=responsibilities,
+            required_skills=_normalize_skill_list(extracted.required_skills),
+            nice_to_have_skills=_normalize_skill_list(extracted.nice_to_have_skills),
+            seniority_level=extracted.seniority_level,
+            domain=extracted.domain.strip().lower(),
+            responsibilities=extracted.responsibilities,
         )
 
 
