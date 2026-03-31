@@ -1,6 +1,7 @@
 # Pelgo AI Lead Assignment
 
 [![CI](https://github.com/daffahilmyf/career-match-assignment/actions/workflows/ci.yml/badge.svg)](https://github.com/daffahilmyf/career-match-assignment/actions/workflows/ci.yml)
+[![Live Integration](https://github.com/daffahilmyf/career-match-assignment/actions/workflows/integration-live.yml/badge.svg)](https://github.com/daffahilmyf/career-match-assignment/actions/workflows/integration-live.yml)
 
 ## Executive Summary
 
