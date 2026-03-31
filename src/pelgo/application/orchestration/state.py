@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import operator
-from typing import Annotated, NotRequired, TypedDict
+from typing import NotRequired, TypedDict
 
 from pelgo.domain.model.agent_evaluation_schema import ToolCallTrace
 from pelgo.domain.model.tool_schema import (
@@ -25,12 +24,15 @@ class AgentState(TypedDict):
     requirements: NotRequired[ExtractJDRequirementsOutput]
     score: NotRequired[ScoreCandidateOutput]
     prioritized_gaps: NotRequired[PrioritiseSkillGapsOutput]
-    resources: NotRequired[Annotated[list[ResearchSkillResourcesOutput], operator.add]]
-    researched_resources: NotRequired[Annotated[list[ResearchResourceEntry], operator.add]]
-    trace_tool_calls: NotRequired[Annotated[list[ToolCallTrace], operator.add]]
+    resources: NotRequired[list[ResearchSkillResourcesOutput]]
+    researched_resources: NotRequired[list[ResearchResourceEntry]]
+    trace_tool_calls: NotRequired[list[ToolCallTrace]]
     gap_skill: NotRequired[str]
     trace_errors: NotRequired[list[dict[str, str | None]]]
     research_started_at: NotRequired[float]
+    attempted_research_skills: NotRequired[list[str]]
+    research_exhausted: NotRequired[bool]
     total_llm_calls: NotRequired[int]
     fallbacks_triggered: NotRequired[int]
     result: NotRequired[object]
+    plan_steps: NotRequired[list[str]]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from pelgo.application.state import AgentState
+from pelgo.application.orchestration.state import AgentState
 
 
 class AgentOrchestrator(Protocol):
