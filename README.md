@@ -393,6 +393,9 @@ Rules:
 
 ### Docker Compose
 
+This is the default path for reviewers. Docker Compose brings up Postgres, API,
+and worker services together.
+
 1. Copy the env file:
 
 ```bash
@@ -415,13 +418,26 @@ docker compose up --build
 
 - `http://localhost:8000/docs`
 
-5. Seed sample data if needed:
-
-```bash
-uv run python scripts/seed.py
-```
+The compose setup already handles the normal review flow. After the services are
+up, use `http://localhost:8000/docs`.
 
 ### Local run
+
+This is useful if you want to debug the API and worker manually without Docker.
+
+#### Prerequisites
+
+- Python `3.13`
+- `uv`
+- A reachable PostgreSQL instance
+
+Install dependencies with:
+
+```bash
+uv sync
+```
+
+#### Steps
 
 1. Copy the env file:
 
@@ -441,13 +457,19 @@ DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/pelgo
 uv run alembic upgrade head
 ```
 
-4. Start API:
+4. Optionally seed sample data:
+
+```bash
+uv run python scripts/seed.py
+```
+
+5. Start API:
 
 ```bash
 uv run uvicorn pelgo.api.main:app --reload
 ```
 
-5. Start worker in another shell:
+6. Start worker in another shell:
 
 ```bash
 uv run python -m pelgo.worker_main
