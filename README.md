@@ -528,8 +528,15 @@ Integration test:
 uv run pytest tests/test_integration_flow.py -m integration
 ```
 
-The integration test is environment-gated and expects a working DB and LLM
-configuration.
+The integration test is environment-gated. Before running it manually, make
+sure these are available:
+
+- a reachable PostgreSQL database via `DATABASE_URL`
+- LLM settings such as `LLM_PROVIDER`, `LLM_MODEL`, and `LLM_API_KEY`
+- migrations already applied with `uv run alembic upgrade head`
+
+In practice, the integration test is meant for a fully configured local
+environment, not a bare checkout.
 
 ## AI-assisted development note
 
