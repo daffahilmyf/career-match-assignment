@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
-from typing import Iterable
+from typing import ClassVar, Iterable
 from urllib.parse import quote_plus
 
 import requests
@@ -23,6 +23,7 @@ from pelgo.domain.model.tool_schema import (
     ScoreCandidateDimensionScores,
     SkillResource,
 )
+from pelgo.ports.llm import LLMClient
 
 DEFAULT_TIMEOUT_SECONDS = 10
 MAX_RESOURCES = 3
@@ -112,18 +113,30 @@ def _extract_skills_from_text(text: str) -> tuple[list[str], list[str]]:
     return required_skills, nice_skills
 
 
+def _llm_extract_prompt(text: str) -> str:
+    return (
+        "Extract job requirements into the required schema. "
+        "Return required_skills, nice_to_have_skills, seniority_level, domain, responsibilities.\n\n"
+        f"Job description:\n{text}"
+    )
+
+
 @dataclass(frozen=True)
 class ExtractJDRequirementsTool:
-    name: str = "extract_jd_requirements"
-    input_model = ExtractJDRequirementsInput
-    output_model = ExtractJDRequirementsOutput
+    name: ClassVar[str] = "extract_jd_requirements"
+    input_model: ClassVar[type[ExtractJDRequirementsInput]] = ExtractJDRequirementsInput
+    output_model: ClassVar[type[ExtractJDRequirementsOutput]] = ExtractJDRequirementsOutput
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    llm: LLMClient | None = None
 
     def __call__(self, payload: ExtractJDRequirementsInput) -> ExtractJDRequirementsOutput:
         text = payload.job_url_or_text
         if _is_url(text):
             text = _fetch_url(text, self.timeout_seconds)
         cleaned = _clean_text(text)
+        if self.llm is not None:
+            prompt = _llm_extract_prompt(cleaned)
+            return self.llm.complete_json(prompt, ExtractJDRequirementsOutput)
         required_skills, nice_skills = _extract_skills_from_text(cleaned)
         seniority = _extract_seniority(cleaned)
         responsibilities = _extract_responsibilities(cleaned)
@@ -144,9 +157,9 @@ class ExtractJDRequirementsTool:
 
 @dataclass(frozen=True)
 class ScoreCandidateTool:
-    name: str = "score_candidate_against_requirements"
-    input_model = ScoreCandidateInput
-    output_model = ScoreCandidateOutput
+    name: ClassVar[str] = "score_candidate_against_requirements"
+    input_model: ClassVar[type[ScoreCandidateInput]] = ScoreCandidateInput
+    output_model: ClassVar[type[ScoreCandidateOutput]] = ScoreCandidateOutput
 
     def __call__(self, payload: ScoreCandidateInput) -> ScoreCandidateOutput:
         candidate_text = payload.candidate_profile
@@ -210,9 +223,9 @@ class ScoreCandidateTool:
 
 @dataclass(frozen=True)
 class PrioritiseSkillGapsTool:
-    name: str = "prioritise_skill_gaps"
-    input_model = PrioritiseSkillGapsInput
-    output_model = PrioritiseSkillGapsOutput
+    name: ClassVar[str] = "prioritise_skill_gaps"
+    input_model: ClassVar[type[PrioritiseSkillGapsInput]] = PrioritiseSkillGapsInput
+    output_model: ClassVar[type[PrioritiseSkillGapsOutput]] = PrioritiseSkillGapsOutput
 
     def __call__(self, payload: PrioritiseSkillGapsInput) -> PrioritiseSkillGapsOutput:
         context = payload.job_market_context.lower()
@@ -239,9 +252,9 @@ class PrioritiseSkillGapsTool:
 
 @dataclass(frozen=True)
 class ResearchSkillResourcesTool:
-    name: str = "research_skill_resources"
-    input_model = ResearchSkillResourcesInput
-    output_model = ResearchSkillResourcesOutput
+    name: ClassVar[str] = "research_skill_resources"
+    input_model: ClassVar[type[ResearchSkillResourcesInput]] = ResearchSkillResourcesInput
+    output_model: ClassVar[type[ResearchSkillResourcesOutput]] = ResearchSkillResourcesOutput
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
 
     def __call__(self, payload: ResearchSkillResourcesInput) -> ResearchSkillResourcesOutput:

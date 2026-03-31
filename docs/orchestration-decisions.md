@@ -137,3 +137,17 @@ why LangGraph/LangChain vs Google ADK is a defensible choice for this project.
 | Interview Defensibility | Medium-High (if state added) | High |
 | Vendor Lock-in Risk | Medium | High |
 | Ecosystem Maturity | High | Medium |
+
+## LLM Client Layer Decision
+
+We will use **LangChain as the LLM client layer** to keep the system
+provider-agnostic and flexible if we support multiple providers later. The
+trade-off is small additional latency due to wrapper overhead, which is
+acceptable for this assignment given the benefits in portability and future
+extensibility.
+
+### Considered Alternatives
+
+- Direct provider SDK (lower latency, higher lock-in).
+- LiteLLM (provider-agnostic but recent security concerns; deferred).
+- Thin internal adapter (more control, more engineering work).

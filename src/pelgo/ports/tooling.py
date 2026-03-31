@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Protocol, Type, runtime_checkable
+from typing import ClassVar, Iterable, Protocol, Type, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -10,9 +10,9 @@ from pelgo.domain.model import tool_schema
 
 @runtime_checkable
 class Tool(Protocol):
-    name: str
-    input_model: Type[BaseModel]
-    output_model: Type[BaseModel]
+    name: ClassVar[str]
+    input_model: ClassVar[Type[BaseModel]]
+    output_model: ClassVar[Type[BaseModel]]
 
     def __call__(self, payload: BaseModel) -> BaseModel: ...
 
