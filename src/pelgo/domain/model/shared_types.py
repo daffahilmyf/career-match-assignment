@@ -12,6 +12,13 @@ class ConfidenceLevel(str, Enum):
     high = "high"
 
 
+class ResourceType(str, Enum):
+    course = "course"
+    project = "project"
+    cert = "cert"
+    doc = "doc"
+
+
 ScorePercent = Annotated[int, Field(ge=0, le=100)]
 PositiveInt = Annotated[int, Field(ge=1)]
 NonNegativeInt = Annotated[int, Field(ge=0)]

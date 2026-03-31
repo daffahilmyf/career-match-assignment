@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from enum import Enum
 from typing import List, Optional
 
 from pydantic import BaseModel, Field, HttpUrl
@@ -8,6 +7,7 @@ from pydantic import BaseModel, Field, HttpUrl
 from .shared_types import (
     ConfidenceLevel,
     PositiveInt,
+    ResourceType,
     ScorePercent,
 )
 
@@ -46,13 +46,6 @@ class ScoreCandidateOutput(BaseModel):
 class ResearchSkillResourcesInput(BaseModel):
     skill_name: str = Field(..., min_length=1)
     seniority_context: Optional[str] = None
-
-
-class ResourceType(str, Enum):
-    course = "course"
-    project = "project"
-    cert = "cert"
-    doc = "doc"
 
 
 class SkillResource(BaseModel):
