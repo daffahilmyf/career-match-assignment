@@ -107,7 +107,12 @@ Rules:
 - Normalize skills to lowercase canonical names.
 - Keep education and experience entries short and factual.
 - If a field is missing, use null for scalar fields and [] for list fields.
-- Estimate years_experience from explicit evidence in the resume only.
+- years_experience must be conservative and evidence-based.
+- Only use years_experience when the resume explicitly states a total like "5 years of experience"
+  or when work date ranges clearly support a conservative total.
+- Do not infer years_experience from seniority titles alone.
+- Do not use graduation dates, project durations, or unrelated year mentions.
+- If the total years of experience is ambiguous, return 0.
 
 Resume text:
 {{resume_text}}
