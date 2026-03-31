@@ -21,4 +21,4 @@ class AgentState(TypedDict):
     resources: NotRequired[Annotated[list[ResearchSkillResourcesOutput], operator.add]]
     trace_tool_calls: NotRequired[Annotated[list[ToolCallTrace], operator.add]]
     gap_skill: NotRequired[str]
-    trace_last_error: NotRequired[dict[str, str | None]]
+    trace_errors: NotRequired[list[dict[str, str | None]]]

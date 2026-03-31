@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from typing import Iterable, Type, TypeVar, TYPE_CHECKING, cast
+from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
 from langgraph.types import Send
@@ -37,15 +38,25 @@ def _record_trace(
     error_type: str | None = None,
     message: str | None = None,
 ) -> None:
-    entry = ToolCallTrace(tool=tool_name, status=status, latency_ms=latency_ms)
+    call_id = uuid4().hex
+    entry = ToolCallTrace(
+        tool=tool_name,
+        status=status,
+        latency_ms=latency_ms,
+        call_id=call_id,
+    )
     trace = list(state.get("trace_tool_calls", [])) + [entry]
     state["trace_tool_calls"] = trace
     if error_type or message:
-        state["trace_last_error"] = {
-            "tool": tool_name,
-            "error_type": error_type,
-            "message": message,
-        }
+        errors = list(state.get("trace_errors", [])) + [
+            {
+                "tool": tool_name,
+                "error_type": error_type,
+                "message": message,
+                "call_id": call_id,
+            }
+        ]
+        state["trace_errors"] = errors
 
 
 def _call_tool(
@@ -123,7 +134,8 @@ def build_graph(tools: ToolRegistry):
         if not ranked:
             yield Send("collect_resources", {})
             return
-        for gap in ranked[:TOP_GAP_LIMIT]:
+        ranked_sorted = sorted(ranked, key=lambda gap: gap.priority_rank)
+        for gap in ranked_sorted[:TOP_GAP_LIMIT]:
             yield Send("research_resource", {"gap_skill": gap.skill})
 
     def research_resource(state: AgentState) -> AgentState:
@@ -139,6 +151,8 @@ def build_graph(tools: ToolRegistry):
         return state
 
     def collect_resources(state: AgentState) -> AgentState:
+        resources = state.get("resources", [])
+        state["resources"] = resources
         return state
 
     graph.add_node("extract_requirements", extract_requirements)

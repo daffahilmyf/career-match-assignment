@@ -39,6 +39,7 @@ class ToolCallTrace(BaseModel):
     tool: str
     status: str
     latency_ms: NonNegativeInt
+    call_id: str
 
 
 class AgentExecutionTrace(BaseModel):
@@ -52,8 +53,7 @@ class AgentExecutionTrace(BaseModel):
 class AgentEvaluationResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    job_id: UUID = Field(..., serialization_alias="job_id",
-                         validation_alias="job_id")
+    job_id: UUID = Field(..., serialization_alias="job_id", validation_alias="job_id")
     overall_match_score: ScorePercent = Field(
         ..., serialization_alias="overall_score", validation_alias="overall_score"
     )
