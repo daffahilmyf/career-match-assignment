@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
 from pypdf import PdfReader
 
 from pelgo.api.schemas import (
@@ -18,12 +19,38 @@ from pelgo.api.schemas import (
     MatchesCreateResponse,
     MatchStatusResponse,
 )
+from pelgo.application.bootstrap.llm import build_llm_client
 from pelgo.application.config import AppSettings
 from pelgo.adapters.persistence.postgres_job_repository import PostgresJobRepository, create_pg_engine
+from pelgo.domain.model.candidate_profile import CandidateProfile
 from pelgo.application.logging import configure_logging, get_logger, log_event
+from pelgo.prompts.templates import EXTRACT_CANDIDATE_PROFILE_PROMPT
 
 
-def _extract_profile_from_text(resume_text: str) -> dict[str, Any]:
+class CandidateProfileExtraction(CandidateProfile):
+    pass
+
+
+def _normalize_candidate_profile(profile: CandidateProfileExtraction) -> CandidateProfile:
+    skills: list[str] = []
+    seen: set[str] = set()
+    for skill in profile.skills:
+        cleaned = re.sub(r"[^a-z0-9+.#-]+", " ", skill.lower()).strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        skills.append(cleaned)
+    return CandidateProfile(
+        name=profile.name.strip() if profile.name else None,
+        email=profile.email.strip().lower() if profile.email else None,
+        skills=skills,
+        education=[item.strip() for item in profile.education if item and item.strip()],
+        experience=[item.strip() for item in profile.experience if item and item.strip()],
+        years_experience=max(0, int(profile.years_experience or 0)),
+    )
+
+
+def _extract_profile_from_text(resume_text: str) -> CandidateProfile:
     lines = [line.strip() for line in resume_text.splitlines() if line.strip()]
     name = lines[0] if lines else None
     email_match = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", resume_text, re.IGNORECASE)
@@ -52,14 +79,20 @@ def _extract_profile_from_text(resume_text: str) -> dict[str, Any]:
     years_match = re.findall(r"(\d+)\+?\s+years?", resume_text, re.IGNORECASE)
     years_experience = max([int(val) for val in years_match], default=0)
 
-    return {
-        "name": name,
-        "email": email,
-        "skills": skills,
-        "education": education,
-        "experience": experience_lines,
-        "years_experience": years_experience,
-    }
+    return CandidateProfile(
+        name=name,
+        email=email.lower() if email else None,
+        skills=[skill.lower() for skill in skills],
+        education=education,
+        experience=experience_lines,
+        years_experience=years_experience,
+    )
+
+
+def _extract_profile_with_llm(resume_text: str, llm: Any) -> CandidateProfile:
+    prompt = EXTRACT_CANDIDATE_PROFILE_PROMPT.replace("{{resume_text}}", resume_text)
+    extracted = llm.complete_json(prompt, CandidateProfileExtraction)
+    return _normalize_candidate_profile(CandidateProfileExtraction.model_validate(extracted))
 
 
 def _extract_text_from_pdf(base64_payload: str) -> str:
@@ -84,6 +117,7 @@ def create_app() -> FastAPI:
 
     engine = create_pg_engine(settings.database_url)
     repo = PostgresJobRepository(engine)
+    llm = build_llm_client(settings)
 
     app = FastAPI(title="Pelgo Matching API", version="0.1.0")
 
@@ -100,8 +134,11 @@ def create_app() -> FastAPI:
             resume_text = _extract_text_from_pdf(payload.resume_pdf_base64 or "")
         if not resume_text:
             raise HTTPException(status_code=400, detail="Resume text could not be extracted")
-        profile = _extract_profile_from_text(resume_text)
-        candidate_id = repo.create_candidate(profile)
+        try:
+            profile = _extract_profile_with_llm(resume_text, llm)
+        except Exception:
+            profile = _extract_profile_from_text(resume_text)
+        candidate_id = repo.create_candidate(profile.model_dump(mode="json"))
         log_event(logger, "candidate.created", candidate_id=candidate_id)
         return CandidateCreateResponse(candidate_id=candidate_id, profile=profile)
 

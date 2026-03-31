@@ -90,3 +90,25 @@ Rules:
 - estimated_match_gain_pct must be 5-20.
 - rationale must be specific to the job context (not generic).
 """
+
+
+EXTRACT_CANDIDATE_PROFILE_PROMPT = """
+You are extracting a structured candidate profile from a resume.
+
+Return JSON that matches this schema exactly:
+- name: string | null
+- email: string | null
+- skills: list of canonical skill tokens
+- education: list of concise education entries
+- experience: list of concise work experience entries
+- years_experience: integer >= 0
+
+Rules:
+- Normalize skills to lowercase canonical names.
+- Keep education and experience entries short and factual.
+- If a field is missing, use null for scalar fields and [] for list fields.
+- Estimate years_experience from explicit evidence in the resume only.
+
+Resume text:
+{{resume_text}}
+"""
