@@ -31,4 +31,6 @@ class AgentState(TypedDict):
     gap_skill: NotRequired[str]
     trace_errors: NotRequired[list[dict[str, str | None]]]
     research_started_at: NotRequired[float]
+    total_llm_calls: NotRequired[int]
+    fallbacks_triggered: NotRequired[int]
     result: NotRequired[object]

@@ -4,11 +4,13 @@ import time
 from typing import Iterable, Type, TypeVar, cast
 from uuid import UUID, uuid4
 
+import requests
 from langgraph.graph import END, StateGraph
 from langgraph.types import Send
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
+from pelgo.application.config import AppSettings
 from pelgo.application.state import AgentState, ResearchResourceEntry
 from pelgo.domain.model.agent_evaluation_schema import (
     AgentEvaluationResult,
@@ -26,18 +28,24 @@ from pelgo.domain.model.tool_schema import (
     ScoreCandidateOutput,
     SkillResource,
 )
+from pelgo.ports.llm import LLMClient
 from pelgo.ports.tooling import ToolRegistry, validate_tool_registry
 
-TOP_GAP_LIMIT = 3
-RESEARCH_TIME_CAP_SECONDS = 25
-
 BaseModelT = TypeVar("BaseModelT", bound=BaseModel)
+
+
+class ReasoningResponse(BaseModel):
+    reasoning: str
 
 
 def _require(state: AgentState, key: str):
     if key not in state:
         raise KeyError(f"Missing required state key: {key}")
     return state[key]
+
+
+def _bump_fallbacks(state: AgentState) -> None:
+    state["fallbacks_triggered"] = state.get("fallbacks_triggered", 0) + 1
 
 
 def _record_trace(
@@ -75,48 +83,70 @@ def _call_tool(
     payload: BaseModel,
     tools: ToolRegistry,
     output_model: Type[BaseModelT],
+    llm_call: bool = False,
+    max_attempts: int = 1,
 ) -> BaseModelT:
     tool = tools[tool_name]
-    start = time.perf_counter()
-    try:
-        raw_output = tool(payload)
-        output = output_model.model_validate(raw_output)
-        latency_ms = int((time.perf_counter() - start) * 1000)
-        _record_trace(state, tool_name, "success", latency_ms)
-        return output
-    except Exception as exc:
-        latency_ms = int((time.perf_counter() - start) * 1000)
-        _record_trace(
-            state,
-            tool_name,
-            "error",
-            latency_ms,
-            error_type=exc.__class__.__name__,
-            message=str(exc),
-        )
-        raise
+    attempt = 0
+    while True:
+        attempt += 1
+        start = time.perf_counter()
+        try:
+            raw_output = tool(payload)
+            output = output_model.model_validate(raw_output)
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            _record_trace(state, tool_name, "success", latency_ms)
+            if llm_call:
+                state["total_llm_calls"] = state.get("total_llm_calls", 0) + 1
+            return output
+        except (ValidationError, requests.Timeout) as exc:
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            _record_trace(
+                state,
+                tool_name,
+                "error",
+                latency_ms,
+                error_type=exc.__class__.__name__,
+                message=str(exc),
+            )
+            if attempt < max_attempts:
+                _bump_fallbacks(state)
+                continue
+            raise
+        except Exception as exc:
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            _record_trace(
+                state,
+                tool_name,
+                "error",
+                latency_ms,
+                error_type=exc.__class__.__name__,
+                message=str(exc),
+            )
+            raise
 
 
-def _research_limit(state: AgentState) -> int:
+def _research_limit(state: AgentState, settings: AppSettings) -> int:
     score: ScoreCandidateOutput = _require(state, "score")
     if score.confidence == ConfidenceLevel.high:
         return 0
     if score.confidence == ConfidenceLevel.medium:
         return 1
-    return TOP_GAP_LIMIT
+    return settings.top_gap_limit
 
 
 def _to_learning_resources(resources: list[SkillResource]) -> list[LearningResource]:
     return [LearningResource.model_validate(resource) for resource in resources]
 
 
-def _build_learning_plan(state: AgentState) -> list[LearningPlanItem]:
+def _build_learning_plan(state: AgentState, settings: AppSettings) -> list[LearningPlanItem]:
     prioritized: PrioritiseSkillGapsOutput = _require(state, "prioritized_gaps")
     resources = state.get("researched_resources", [])
     resources_by_skill = {entry["skill"]: entry["resources"] for entry in resources}
 
+    gaps = prioritized.ranked_skills[: settings.top_gap_limit]
     plan: list[LearningPlanItem] = []
-    for gap in prioritized.ranked_skills[:TOP_GAP_LIMIT]:
+    for gap in gaps:
         skill_resources = resources_by_skill.get(gap.skill, [])
         plan.append(
             LearningPlanItem(
@@ -130,17 +160,61 @@ def _build_learning_plan(state: AgentState) -> list[LearningPlanItem]:
     return plan
 
 
-def _build_summary(score: ScoreCandidateOutput) -> str:
-    summary = (
-        "Match score and learning plan were generated from the job requirements, "
-        "skill coverage, seniority alignment, and domain overlap signals. "
-        "This summary explains the overall fit and highlights the highest-impact gaps."
+def _build_reasoning(
+    llm: LLMClient | None,
+    score: ScoreCandidateOutput,
+    requirements: ExtractJDRequirementsOutput,
+    candidate_profile: str,
+    job_input: str,
+) -> tuple[str, bool]:
+    if llm is None:
+        return (
+            "Match score and learning plan were generated from the job requirements, "
+            "skill coverage, seniority alignment, and domain overlap signals. "
+            "This summary explains the overall fit and highlights the highest-impact gaps.",
+            False,
+        )
+
+    prompt = (
+        "Write a 2-3 sentence reasoning summary for the match score. "
+        "Use the candidate profile and the job description as context. "
+        "Mention matched skills and key gaps in plain English. "
+        "Keep it concise and avoid bullet points.\n\n"
+        f"Candidate profile (summary): {candidate_profile}\n"
+        f"Job description (summary): {job_input}\n"
+        f"Matched skills: {', '.join(score.matched_skills)}\n"
+        f"Gap skills: {', '.join(score.gap_skills)}\n"
+        f"Seniority: {requirements.seniority_level}\n"
+        f"Domain: {requirements.domain}\n"
     )
-    return summary
+    response = llm.complete_json(prompt, ReasoningResponse)
+    return response.reasoning, True
 
 
-def build_graph(tools: ToolRegistry):
+def _dedupe_trace(trace_calls: list[ToolCallTrace]) -> list[ToolCallTrace]:
+    seen: set[str] = set()
+    deduped: list[ToolCallTrace] = []
+    for entry in trace_calls:
+        if entry.call_id in seen:
+            continue
+        seen.add(entry.call_id)
+        deduped.append(entry)
+    return deduped
+
+
+def _resolve_gap_skills(score: ScoreCandidateOutput, prioritized: PrioritiseSkillGapsOutput) -> list[str]:
+    if score.gap_skills:
+        return score.gap_skills
+    if prioritized.ranked_skills:
+        return [gap.skill for gap in prioritized.ranked_skills]
+    return []
+
+
+def build_graph(
+    tools: ToolRegistry, settings: AppSettings | None = None, llm: LLMClient | None = None
+):
     validate_tool_registry(tools)
+    settings = settings or AppSettings()
 
     graph = StateGraph(AgentState)
 
@@ -148,7 +222,13 @@ def build_graph(tools: ToolRegistry):
         tool = tools["extract_jd_requirements"]
         payload = tool.input_model(job_url_or_text=_require(state, "job_input"))
         output = _call_tool(
-            state, "extract_jd_requirements", payload, tools, tool.output_model
+            state,
+            "extract_jd_requirements",
+            payload,
+            tools,
+            tool.output_model,
+            llm_call=True,
+            max_attempts=2,
         )
         state["requirements"] = cast(ExtractJDRequirementsOutput, output)
         return state
@@ -182,10 +262,15 @@ def build_graph(tools: ToolRegistry):
         return state
 
     def fanout_gaps(state: AgentState) -> Iterable[Send]:
-        limit = _research_limit(state)
+        limit = _research_limit(state, settings)
         if limit == 0:
-            yield Send("collect_resources", {})
-            return
+            score: ScoreCandidateOutput = _require(state, "score")
+            if score.confidence == ConfidenceLevel.low:
+                _bump_fallbacks(state)
+                limit = 1
+            else:
+                yield Send("collect_resources", {})
+                return
         ranked = _require(state, "prioritized_gaps").ranked_skills
         if not ranked:
             yield Send("collect_resources", {})
@@ -199,7 +284,7 @@ def build_graph(tools: ToolRegistry):
     def research_resource(state: AgentState) -> AgentState:
         started_at = state.get("research_started_at")
         if started_at is not None:
-            if time.perf_counter() - started_at > RESEARCH_TIME_CAP_SECONDS:
+            if time.perf_counter() - started_at > settings.research_time_cap_seconds:
                 return state
         tool = tools["research_skill_resources"]
         payload = tool.input_model(
@@ -225,14 +310,25 @@ def build_graph(tools: ToolRegistry):
 
     def assemble_result(state: AgentState) -> AgentState:
         score: ScoreCandidateOutput = _require(state, "score")
-        trace_calls = state.get("trace_tool_calls", [])
+        requirements: ExtractJDRequirementsOutput = _require(state, "requirements")
+        prioritized: PrioritiseSkillGapsOutput = _require(state, "prioritized_gaps")
+        trace_calls = _dedupe_trace(state.get("trace_tool_calls", []))
+        summary, used_llm = _build_reasoning(
+            llm,
+            score,
+            requirements,
+            _require(state, "candidate_profile"),
+            _require(state, "job_input"),
+        )
+        if used_llm:
+            state["total_llm_calls"] = state.get("total_llm_calls", 0) + 1
         execution_trace = AgentExecutionTrace(
             tool_calls=trace_calls,
-            total_llm_calls=0,
-            fallbacks_triggered=0,
+            total_llm_calls=state.get("total_llm_calls", 0),
+            fallbacks_triggered=state.get("fallbacks_triggered", 0),
         )
-        plan = _build_learning_plan(state)
-        summary = _build_summary(score)
+        plan = _build_learning_plan(state, settings)
+        gap_skills = _resolve_gap_skills(score, prioritized)
         result = AgentEvaluationResult(
             job_id=UUID(_require(state, "job_id")),
             overall_match_score=score.overall_score,
@@ -243,7 +339,7 @@ def build_graph(tools: ToolRegistry):
                 seniority_fit=score.dimension_scores.seniority_fit,
             ),
             matched_skill_tags=score.matched_skills,
-            missing_skill_tags=score.gap_skills,
+            missing_skill_tags=gap_skills,
             summary=summary,
             learning_plan=plan,
             execution_trace=execution_trace,
