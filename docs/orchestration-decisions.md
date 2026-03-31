@@ -79,6 +79,18 @@ allow reliable benchmarking.
 - Produce `low | medium | high` based on simple thresholds.
 - Rationale: defensible, auditable, and easy to tune later.
 
+### Proposed Weights and Thresholds (Initial)
+
+- Weights:
+  - JD completeness: 0.2
+  - Skill coverage: 0.4
+  - Seniority alignment: 0.2
+  - Domain overlap: 0.2
+- Thresholds:
+  - High: >= 0.75
+  - Medium: 0.50 - 0.74
+  - Low: < 0.50
+
 ### Deferred Alternatives
 
 - Calibration via labeled validation set.
@@ -137,6 +149,12 @@ why LangGraph/LangChain vs Google ADK is a defensible choice for this project.
 | Interview Defensibility | Medium-High (if state added) | High |
 | Vendor Lock-in Risk | Medium | High |
 | Ecosystem Maturity | High | Medium |
+
+## Orchestration Decision (Current)
+
+- We will proceed with **LangGraph** for orchestration due to strong state
+  semantics and parallel fan-out support.
+- LangChain remains in the stack as the LLM client layer for provider-agnosticism.
 
 ## LLM Client Layer Decision
 
