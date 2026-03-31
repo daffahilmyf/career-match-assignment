@@ -9,17 +9,26 @@ from pelgo.domain.model.tool_schema import (
     PrioritiseSkillGapsOutput,
     ResearchSkillResourcesOutput,
     ScoreCandidateOutput,
+    SkillResource,
 )
 
 
+class ResearchResourceEntry(TypedDict):
+    skill: str
+    resources: list[SkillResource]
+
+
 class AgentState(TypedDict):
+    job_id: str
     candidate_profile: str
     job_input: str
     requirements: NotRequired[ExtractJDRequirementsOutput]
     score: NotRequired[ScoreCandidateOutput]
     prioritized_gaps: NotRequired[PrioritiseSkillGapsOutput]
     resources: NotRequired[Annotated[list[ResearchSkillResourcesOutput], operator.add]]
+    researched_resources: NotRequired[Annotated[list[ResearchResourceEntry], operator.add]]
     trace_tool_calls: NotRequired[Annotated[list[ToolCallTrace], operator.add]]
     gap_skill: NotRequired[str]
     trace_errors: NotRequired[list[dict[str, str | None]]]
     research_started_at: NotRequired[float]
+    result: NotRequired[object]

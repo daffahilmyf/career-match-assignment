@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import time
 from typing import Iterable, Type, TypeVar, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from langgraph.graph import END, StateGraph
 from langgraph.types import Send
 
 from pydantic import BaseModel
 
-from pelgo.application.state import AgentState
-from pelgo.domain.model.agent_evaluation_schema import ToolCallTrace
+from pelgo.application.state import AgentState, ResearchResourceEntry
+from pelgo.domain.model.agent_evaluation_schema import (
+    AgentEvaluationResult,
+    AgentExecutionTrace,
+    DimensionMatchScores,
+    LearningPlanItem,
+    ToolCallTrace,
+)
 from pelgo.domain.model.shared_types import ConfidenceLevel
 from pelgo.domain.model.tool_schema import (
     ExtractJDRequirementsOutput,
@@ -98,6 +104,25 @@ def _research_limit(state: AgentState) -> int:
     return TOP_GAP_LIMIT
 
 
+def _build_learning_plan(state: AgentState) -> list[LearningPlanItem]:
+    prioritized: PrioritiseSkillGapsOutput = _require(state, "prioritized_gaps")
+    resources = state.get("researched_resources", [])
+    resources_by_skill = {entry["skill"]: entry["resources"] for entry in resources}
+
+    plan: list[LearningPlanItem] = []
+    for gap in prioritized.ranked_skills[:TOP_GAP_LIMIT]:
+        plan.append(
+            LearningPlanItem(
+                skill=gap.skill,
+                priority_rank=gap.priority_rank,
+                estimated_match_gain_pct=gap.estimated_match_gain_pct,
+                resources=resources_by_skill.get(gap.skill, []),
+                rationale=gap.rationale,
+            )
+        )
+    return plan
+
+
 def build_graph(tools: ToolRegistry):
     validate_tool_registry(tools)
 
@@ -168,7 +193,13 @@ def build_graph(tools: ToolRegistry):
         output = _call_tool(
             state, "research_skill_resources", payload, tools, tool.output_model
         )
-        state["resources"] = [cast(ResearchSkillResourcesOutput, output)]
+        resource_output = cast(ResearchSkillResourcesOutput, output)
+        state["resources"] = [resource_output]
+        entry: ResearchResourceEntry = {
+            "skill": _require(state, "gap_skill"),
+            "resources": resource_output.resources,
+        }
+        state["researched_resources"] = [entry]
         return state
 
     def collect_resources(state: AgentState) -> AgentState:
@@ -176,17 +207,47 @@ def build_graph(tools: ToolRegistry):
         state["resources"] = resources
         return state
 
+    def assemble_result(state: AgentState) -> AgentState:
+        score: ScoreCandidateOutput = _require(state, "score")
+        trace_calls = state.get("trace_tool_calls", [])
+        execution_trace = AgentExecutionTrace(
+            tool_calls=trace_calls,
+            total_llm_calls=0,
+            fallbacks_triggered=0,
+        )
+        plan = _build_learning_plan(state)
+        summary = "Match score and learning plan generated based on job requirements."
+        result = AgentEvaluationResult(
+            job_id=UUID(_require(state, "job_id")),
+            overall_score=score.overall_score,
+            confidence=score.confidence,
+            dimension_scores=DimensionMatchScores(
+                skills=score.dimension_scores.skills,
+                experience=score.dimension_scores.experience,
+                seniority_fit=score.dimension_scores.seniority_fit,
+            ),
+            matched_skills=score.matched_skills,
+            gap_skills=score.gap_skills,
+            reasoning=summary,
+            learning_plan=plan,
+            agent_trace=execution_trace,
+        )
+        state["result"] = result
+        return state
+
     graph.add_node("extract_requirements", extract_requirements)
     graph.add_node("score_candidate", score_candidate)
     graph.add_node("prioritise_gaps", prioritise_gaps)
     graph.add_node("research_resource", research_resource)
     graph.add_node("collect_resources", collect_resources)
+    graph.add_node("assemble_result", assemble_result)
 
     graph.set_entry_point("extract_requirements")
     graph.add_edge("extract_requirements", "score_candidate")
     graph.add_edge("score_candidate", "prioritise_gaps")
     graph.add_conditional_edges("prioritise_gaps", fanout_gaps)
     graph.add_edge("research_resource", "collect_resources")
-    graph.add_edge("collect_resources", END)
+    graph.add_edge("collect_resources", "assemble_result")
+    graph.add_edge("assemble_result", END)
 
     return graph.compile()
