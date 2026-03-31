@@ -23,11 +23,11 @@ class FakeRepo:
 
     def get_candidate_profile(self, candidate_id: str):
         return {
-            "name": "Ari Pranata",
-            "email": "ari@example.com",
+            "name": "John Doe",
+            "email": "john@example.com",
             "skills": ["Python"],
             "years_experience": 6,
-            "summary": "Ari Pranata can be reached at ari@example.com",
+            "summary": "John Doe can be reached at john@example.com",
         }
 
     def mark_completed(self, job_id: str, output: dict, trace: dict) -> None:

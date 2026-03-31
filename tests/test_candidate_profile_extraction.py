@@ -6,10 +6,10 @@ from pelgo.domain.model.candidate_profile import CandidateProfile
 
 class FakeLLM:
     def complete_json(self, prompt: str, schema: type[BaseModel]) -> BaseModel:
-        assert "Ari Pranata" in prompt
+        assert "John Doe" in prompt
         return schema(
-            name="Ari Pranata",
-            email="Ari@example.com",
+            name="John Doe",
+            email="John@example.com",
             skills=["Python", "PostgreSQL", "Python"],
             education=["B.Sc Computer Science"],
             experience=["Senior Backend Engineer at HorizonLabs"],
@@ -18,11 +18,11 @@ class FakeLLM:
 
 
 def test_extract_profile_with_llm_normalizes_output() -> None:
-    profile = _extract_profile_with_llm("Ari Pranata\nSkills: Python, PostgreSQL", FakeLLM())
+    profile = _extract_profile_with_llm("John Doe\nSkills: Python, PostgreSQL", FakeLLM())
 
     assert profile == CandidateProfile(
-        name="Ari Pranata",
-        email="ari@example.com",
+        name="John Doe",
+        email="john@example.com",
         skills=["python", "postgresql"],
         education=["B.Sc Computer Science"],
         experience=["Senior Backend Engineer at HorizonLabs"],

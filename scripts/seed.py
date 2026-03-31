@@ -36,7 +36,7 @@ def main() -> None:
         ][:4]
 
     candidate_text = (
-        "Ari Pranata\n"
+        "John Doe\n"
         "Backend Engineer\n"
         "Email: ari.pranata@example.com\n"
         "\n"
@@ -77,7 +77,7 @@ def main() -> None:
     )
 
     profile = {
-        "name": "Ari Pranata",
+        "name": "John Doe",
         "email": "ari.pranata@example.com",
         "skills": skills,
         "education": ["B.Sc. Computer Science, Bandung Institute of Technology"],
