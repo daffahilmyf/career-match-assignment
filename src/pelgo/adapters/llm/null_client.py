@@ -14,3 +14,9 @@ BaseModelT = TypeVar("BaseModelT", bound=BaseModel)
 class NullLLMClient(LLMClient):
     def complete_json(self, prompt: str, schema: Type[BaseModelT]) -> BaseModelT:
         raise RuntimeError("LLM client is not configured")
+
+    def usage(self) -> dict[str, int] | None:
+        return None
+
+    def call_count(self) -> int:
+        return 0
