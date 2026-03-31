@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run focused test suite
+        run: >-
+          uv run pytest
+          tests/test_api_schema_validation.py
+          tests/test_candidate_profile_extraction.py
+          tests/test_langgraph_routing.py
+          tests/test_match_status_response.py
+          tests/test_pii_redaction.py
+          tests/test_resource_selection.py
+          tests/test_worker_failure.py
+          tests/test_jd_url_tool.py
+
+      - name: Validate Docker build
+        run: docker build -t career-match-assignment:${{ github.sha }} .

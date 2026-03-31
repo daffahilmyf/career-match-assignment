@@ -1,5 +1,7 @@
 # Pelgo AI Lead Assignment
 
+[![CI](https://github.com/daffahilmyf/career-match-assignment/actions/workflows/ci.yml/badge.svg)](https://github.com/daffahilmyf/career-match-assignment/actions/workflows/ci.yml)
+
 ## Executive Summary
 
 This project implements an asynchronous, agent-driven job-matching pipeline for
