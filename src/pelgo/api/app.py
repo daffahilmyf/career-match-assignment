@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import base64
 import io
 import re
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 from pypdf import PdfReader
 
+from pelgo.adapters.persistence.postgres_job_repository import PostgresJobRepository, create_pg_engine
 from pelgo.api.schemas import (
-    CandidateCreateRequest,
     CandidateCreateResponse,
     MatchCreateItem,
     MatchListItem,
@@ -21,14 +20,41 @@ from pelgo.api.schemas import (
 )
 from pelgo.application.bootstrap.llm import build_llm_client
 from pelgo.application.config import AppSettings
-from pelgo.adapters.persistence.postgres_job_repository import PostgresJobRepository, create_pg_engine
-from pelgo.domain.model.candidate_profile import CandidateProfile
 from pelgo.application.logging import configure_logging, get_logger, log_event
+from pelgo.domain.model.candidate_profile import CandidateProfile
 from pelgo.prompts.templates import EXTRACT_CANDIDATE_PROFILE_PROMPT
 
 
 class CandidateProfileExtraction(CandidateProfile):
     pass
+
+
+class CandidateUploadInput(BaseModel):
+    resume_text: str | None = None
+    resume_pdf_bytes: int | None = None
+    resume_pdf_content_type: str | None = None
+    max_pdf_bytes: int = 10 * 1024 * 1024
+
+    @field_validator("resume_text")
+    @classmethod
+    def _empty_text_to_none(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def _validate_sources(self) -> "CandidateUploadInput":
+        provided = [self.resume_text is not None, self.resume_pdf_bytes is not None]
+        if sum(provided) != 1:
+            raise ValueError("Provide exactly one of resume_text or resume_pdf")
+        if self.resume_pdf_bytes is not None:
+            if self.resume_pdf_bytes <= 0:
+                raise ValueError("resume_pdf is empty")
+            if self.resume_pdf_bytes > self.max_pdf_bytes:
+                raise ValueError(f"resume_pdf exceeds max size of {self.max_pdf_bytes} bytes")
+            if self.resume_pdf_content_type not in {"application/pdf", "application/octet-stream"}:
+                raise ValueError("resume_pdf must be a PDF")
+        return self
 
 
 def _normalize_candidate_profile(profile: CandidateProfileExtraction) -> CandidateProfile:
@@ -95,11 +121,7 @@ def _extract_profile_with_llm(resume_text: str, llm: Any) -> CandidateProfile:
     return _normalize_candidate_profile(CandidateProfileExtraction.model_validate(extracted))
 
 
-def _extract_text_from_pdf(base64_payload: str) -> str:
-    try:
-        pdf_bytes = base64.b64decode(base64_payload)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="Invalid base64 for resume_pdf_base64") from exc
+def _extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
     reader = PdfReader(io.BytesIO(pdf_bytes))
     text_parts = []
     for page in reader.pages:
@@ -126,18 +148,31 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/api/v1/candidate", response_model=CandidateCreateResponse)
-    def create_candidate(payload: CandidateCreateRequest) -> CandidateCreateResponse:
-        resume_text = payload.resume_text
-        if resume_text is None and payload.resume_pdf_base64 is None:
-            raise HTTPException(status_code=400, detail="resume_text or resume_pdf_base64 is required")
-        if resume_text is None:
-            resume_text = _extract_text_from_pdf(payload.resume_pdf_base64 or "")
-        if not resume_text:
+    async def create_candidate(
+        resume_text: str | None = Form(None),
+        resume_pdf: UploadFile | None = File(None),
+    ) -> CandidateCreateResponse:
+        pdf_bytes: bytes | None = None
+        if resume_pdf is not None:
+            pdf_bytes = await resume_pdf.read()
+        try:
+            CandidateUploadInput(
+                resume_text=resume_text,
+                resume_pdf_bytes=len(pdf_bytes) if pdf_bytes is not None else None,
+                resume_pdf_content_type=resume_pdf.content_type if resume_pdf is not None else None,
+                max_pdf_bytes=settings.candidate_pdf_max_bytes,
+            )
+        except ValidationError as exc:
+            message = exc.errors()[0]["msg"]
+            raise HTTPException(status_code=400, detail=message.removeprefix("Value error, ")) from exc
+
+        final_resume_text = resume_text.strip() if resume_text is not None else _extract_text_from_pdf_bytes(pdf_bytes or b"")
+        if not final_resume_text:
             raise HTTPException(status_code=400, detail="Resume text could not be extracted")
         try:
-            profile = _extract_profile_with_llm(resume_text, llm)
+            profile = _extract_profile_with_llm(final_resume_text, llm)
         except Exception:
-            profile = _extract_profile_from_text(resume_text)
+            profile = _extract_profile_from_text(final_resume_text)
         candidate_id = repo.create_candidate(profile.model_dump(mode="json"))
         log_event(logger, "candidate.created", candidate_id=candidate_id)
         return CandidateCreateResponse(candidate_id=candidate_id, profile=profile)

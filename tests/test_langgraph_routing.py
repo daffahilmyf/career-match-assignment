@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
 import requests
 from pydantic import BaseModel
 
@@ -43,6 +44,16 @@ class FakeLLM:
     def call_count(self) -> int:
         return self._call_count
 
+
+
+@dataclass(frozen=True)
+class FailingExtractTool:
+    name = "extract_jd_requirements"
+    input_model = ExtractJDRequirementsInput
+    output_model = ExtractJDRequirementsOutput
+
+    def __call__(self, payload: ExtractJDRequirementsInput) -> ExtractJDRequirementsOutput:
+        raise requests.Timeout("jd fetch timed out")
 
 @dataclass(frozen=True)
 class ExtractTool:
@@ -256,3 +267,48 @@ def test_research_failures_do_not_loop_forever():
         "prioritise_skill_gaps",
         "research_skill_resources",
     ]
+
+
+def test_unresearched_prioritized_gaps_get_fallback_resources():
+    tools = {
+        "extract_jd_requirements": ExtractTool(),
+        "score_candidate_against_requirements": ScoreTool(ConfidenceLevel.high, ["graphql", "rest api", "sql"]),
+        "prioritise_skill_gaps": PrioritiseTool(),
+        "research_skill_resources": ResearchTool(),
+    }
+    settings = AppSettings(top_gap_limit=1)
+    graph = build_graph(tools, settings, llm=None).compile()
+
+    state = graph.invoke(
+        {
+            "job_id": "job-5",
+            "candidate_profile": '{"skills": ["python"], "years_experience": 6}',
+            "job_input": "Backend role with GraphQL, REST API, and SQL",
+        }
+    )
+
+    learning_plan = state["result"].learning_plan
+    assert len(learning_plan) == 3
+    assert all(item.resources for item in learning_plan)
+    assert str(learning_plan[1].resources[0].url).startswith("https://ocw.mit.edu/search/?q=")
+    assert str(learning_plan[2].resources[0].url).startswith("https://ocw.mit.edu/search/?q=")
+
+
+def test_jd_url_extraction_failure_raises_instead_of_completing():
+    tools = {
+        "extract_jd_requirements": FailingExtractTool(),
+        "score_candidate_against_requirements": ScoreTool(ConfidenceLevel.high, []),
+        "prioritise_skill_gaps": PrioritiseTool(),
+        "research_skill_resources": ResearchTool(),
+    }
+    settings = AppSettings()
+    graph = build_graph(tools, settings, llm=None).compile()
+
+    with pytest.raises(RuntimeError, match="JD URL extraction failed"):
+        graph.invoke(
+            {
+                "job_id": "job-url-fail",
+                "candidate_profile": '{"skills": ["python"], "years_experience": 6}',
+                "job_input": "https://example.com/jobs/backend",
+            }
+        )

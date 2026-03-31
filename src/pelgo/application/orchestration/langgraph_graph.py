@@ -258,7 +258,8 @@ def build_graph(tools: ToolRegistry, settings: AppSettings, llm: LLMClient | Non
 
     def extract_requirements(state: AgentState) -> AgentState:
         tool = tools["extract_jd_requirements"]
-        payload = tool.input_model(job_url_or_text=_require(state, "job_input"))
+        job_input = _require(state, "job_input")
+        payload = tool.input_model(job_url_or_text=job_input)
         try:
             output = _call_tool(
                 state,
@@ -269,8 +270,10 @@ def build_graph(tools: ToolRegistry, settings: AppSettings, llm: LLMClient | Non
                 max_attempts=2,
             )
             state["requirements"] = cast(ExtractJDRequirementsOutput, output)
-        except Exception:
+        except Exception as exc:
             _bump_fallbacks(state)
+            if job_input.startswith(("http://", "https://")):
+                raise RuntimeError(f"JD URL extraction failed for {job_input}") from exc
             state["requirements"] = ExtractJDRequirementsOutput(
                 required_skills=[],
                 nice_to_have_skills=[],
@@ -390,12 +393,20 @@ def build_graph(tools: ToolRegistry, settings: AppSettings, llm: LLMClient | Non
             ]
         learning_plan = []
         for ranked in prioritized.ranked_skills:
+            resources = resources_by_skill.get(ranked.skill)
+            if resources is None:
+                resources = [
+                    LearningResource.model_validate(
+                        resource.model_dump() if hasattr(resource, "model_dump") else resource
+                    )
+                    for resource in _fallback_resource_output(ranked.skill).resources
+                ]
             learning_plan.append(
                 {
                     "skill": ranked.skill,
                     "priority_rank": ranked.priority_rank,
                     "estimated_match_gain_pct": ranked.estimated_match_gain_pct,
-                    "resources": resources_by_skill.get(ranked.skill, []),
+                    "resources": resources,
                     "rationale": ranked.rationale,
                 }
             )

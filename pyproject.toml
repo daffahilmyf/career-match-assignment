@@ -16,6 +16,7 @@ dependencies = [
     "pytest>=8.0",
     "psycopg[binary]>=3.1",
     "pypdf>=4.2",
+    "python-multipart>=0.0.9",
     "requests>=2.31",
     "sqlalchemy>=2.0",
     "uvicorn>=0.27",

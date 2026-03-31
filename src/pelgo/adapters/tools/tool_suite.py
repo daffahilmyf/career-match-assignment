@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, ClassVar, Iterable
@@ -55,6 +56,11 @@ class PrioritiseGapsResponse(BaseModel):
 
 
 HTTP_URL_ADAPTER = TypeAdapter(HttpUrl)
+JD_LOGGER = logging.getLogger("pelgo.tools.jd")
+
+
+def _log_jd_event(event: str, **fields: Any) -> None:
+    JD_LOGGER.info(event, extra={"extra": {"event": event, **fields}})
 
 
 def _http_url(url: str) -> HttpUrl:
@@ -565,13 +571,29 @@ class ExtractJDRequirementsTool:
         if self.llm is None:
             raise RuntimeError("LLM client is required for JD extraction")
         text = payload.job_url_or_text
-        if _is_url(text):
+        is_url_input = _is_url(text)
+        if is_url_input:
+            _log_jd_event("jd.extract.started", source="url", url=text)
             if self.repository is not None:
                 cached = self.repository.get_cached_jd(text)
                 if cached is not None:
-                    return ExtractJDRequirementsOutput.model_validate(cached.requirements_json)
-            text = _fetch_url(text, self.timeout_seconds)
+                    cached_output = ExtractJDRequirementsOutput.model_validate(cached.requirements_json)
+                    _log_jd_event(
+                        "jd.extract.cache_hit",
+                        url=text,
+                        required_skill_count=len(cached_output.required_skills),
+                        responsibility_count=len(cached_output.responsibilities),
+                    )
+                    return cached_output
+            try:
+                text = _fetch_url(text, self.timeout_seconds)
+            except Exception as exc:
+                _log_jd_event("jd.extract.fetch_failed", url=payload.job_url_or_text, error=str(exc))
+                raise
+            _log_jd_event("jd.extract.fetched", url=payload.job_url_or_text, html_chars=len(text))
         cleaned = _clean_text(text)
+        if is_url_input:
+            _log_jd_event("jd.extract.cleaned", url=payload.job_url_or_text, cleaned_chars=len(cleaned), cleaned_preview=cleaned[:200])
         prompt = _load_prompt(cleaned)
         extracted = self.llm.complete_json(prompt, ExtractJDRequirementsOutput)
         output = ExtractJDRequirementsOutput(
@@ -581,9 +603,20 @@ class ExtractJDRequirementsTool:
             domain=extracted.domain.strip().lower(),
             responsibilities=extracted.responsibilities,
         )
-        if _is_url(payload.job_url_or_text) and self.repository is not None:
+        if is_url_input:
+            _log_jd_event(
+                "jd.extract.completed",
+                url=payload.job_url_or_text,
+                required_skill_count=len(output.required_skills),
+                nice_to_have_skill_count=len(output.nice_to_have_skills),
+                responsibility_count=len(output.responsibilities),
+                seniority_level=output.seniority_level,
+                domain=output.domain,
+            )
+        if is_url_input and self.repository is not None:
             content_hash = _hash_content(cleaned)
             self.repository.upsert_cached_jd(payload.job_url_or_text, content_hash, output.model_dump())
+            _log_jd_event("jd.extract.cache_saved", url=payload.job_url_or_text, content_hash=content_hash)
         return output
 
 

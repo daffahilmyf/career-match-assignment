@@ -13,6 +13,8 @@ class AppSettings(BaseSettings):
     research_time_cap_seconds: int = 25
     top_gap_limit: int = 3
     mit_course_limit: int = 3
+    candidate_pdf_max_bytes: int = 10 * 1024 * 1024
     worker_poll_interval_seconds: float = 1.0
 
     database_url: str | None = None
+

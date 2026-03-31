@@ -2,35 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 from pelgo.domain.model.candidate_profile import CandidateProfile
-
-
-class CandidateCreateRequest(BaseModel):
-    resume_text: str | None = None
-    resume_pdf_base64: str | None = None
-
-    @field_validator("resume_pdf_base64")
-    @classmethod
-    def _empty_pdf_to_none(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            return None
-        return value
-
-    @field_validator("resume_text")
-    @classmethod
-    def _empty_text_to_none(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            return None
-        return value
-
-    @model_validator(mode="after")
-    def _validate_resume_source(self) -> "CandidateCreateRequest":
-        provided = [self.resume_text is not None, self.resume_pdf_base64 is not None]
-        if sum(provided) != 1:
-            raise ValueError("Provide exactly one of resume_text or resume_pdf_base64")
-        return self
 
 
 class CandidateCreateResponse(BaseModel):
