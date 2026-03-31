@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/daffahilmyf/career-match-assignment/actions/workflows/ci.yml/badge.svg)](https://github.com/daffahilmyf/career-match-assignment/actions/workflows/ci.yml)
 [![Live Integration](https://github.com/daffahilmyf/career-match-assignment/actions/workflows/integration-live.yml/badge.svg)](https://github.com/daffahilmyf/career-match-assignment/actions/workflows/integration-live.yml)
+[![Docker Image](https://github.com/daffahilmyf/career-match-assignment/actions/workflows/docker-image.yml/badge.svg)](https://github.com/daffahilmyf/career-match-assignment/actions/workflows/docker-image.yml)
 
 ## Executive Summary
 
@@ -58,6 +59,20 @@ docker compose up --build --scale worker=2
 
 If Docker is not your preferred path, local run instructions are included later
 in this README.
+
+## Delivery
+
+Container delivery is handled by the `Docker Image` GitHub Actions workflow.
+It builds the repository `Dockerfile` and publishes the image to GitHub
+Container Registry as `ghcr.io/daffahilmyf/career-match-assignment`.
+
+Important constraints:
+
+- the workflow only publishes Docker images
+- runtime settings such as `DATABASE_URL`, `LLM_PROVIDER`, `LLM_API_KEY`, and
+  `LLM_MODEL` are not stored in the workflow
+- deployment-time environment configuration must be provided by the runtime
+  platform, not baked into the image
 
 ## What Is Implemented
 
