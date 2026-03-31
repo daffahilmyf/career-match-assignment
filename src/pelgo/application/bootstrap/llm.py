@@ -8,20 +8,22 @@ from pelgo.ports.llm import LLMClient
 
 def build_llm_client(settings: AppSettings | None = None) -> LLMClient:
     settings = settings or AppSettings()
-    provider = (settings.llm_provider or "").lower()
+    provider = (getattr(settings, "llm_provider", None) or "").lower()
     if provider in {"langchain_openai", "openai"}:
-        if not settings.llm_api_key or not settings.llm_model:
+        api_key = getattr(settings, "llm_api_key", None)
+        model = getattr(settings, "llm_model", None)
+        if not api_key or not model:
             raise ValueError("LLM_API_KEY and LLM_MODEL are required for OpenAI")
         return LangChainOpenAIClient(
-            api_key=settings.llm_api_key,
-            model=settings.llm_model,
+            api_key=api_key,
+            model=model,
         )
     return NullLLMClient()
 
 
 def require_llm_client(settings: AppSettings | None = None) -> LLMClient:
     settings = settings or AppSettings()
-    provider = (settings.llm_provider or "").lower()
+    provider = (getattr(settings, "llm_provider", None) or "").lower()
     if provider in {"", "none", "null"}:
         raise RuntimeError("LLM_PROVIDER must be set for LLM-only mode")
     client = build_llm_client(settings)

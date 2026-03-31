@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from pelgo.domain.model.candidate_profile import CandidateProfile
