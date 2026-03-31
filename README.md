@@ -38,6 +38,10 @@ cp .env.example .env
 - `LLM_API_KEY`
 - `LLM_MODEL`
 
+If you are using an OpenAI GPT model, set `LLM_PROVIDER=langchain_openai`,
+choose a GPT model for `LLM_MODEL` such as `gpt-4o-mini`, and get
+`LLM_API_KEY` from the OpenAI console web UI.
+
 3. Start the full stack:
 
 ```bash
@@ -448,6 +452,10 @@ cp .env.example .env
 - `LLM_PROVIDER`
 - `LLM_API_KEY`
 - `LLM_MODEL`
+
+If you are using an OpenAI GPT model, set `LLM_PROVIDER=langchain_openai`,
+choose a GPT model for `LLM_MODEL` such as `gpt-4o-mini`, and get
+`LLM_API_KEY` from the OpenAI console web UI.
 
 3. Start the full stack:
 
