@@ -122,9 +122,50 @@ asynchronously and can be queried by status.
 
 ## Data Flow
 
-1.
-2.
-3.
+1. `POST /api/v1/candidates` ingests a resume (PDF/text), extracts a structured
+   profile, and stores it in Postgres. Returns `candidate_id`.
+2. `POST /api/v1/matches` accepts up to 10 JDs (text or URL). Creates one
+   `match_job` per JD, enqueues work, and returns `job_ids` in `pending`.
+3. Workers claim jobs, load candidate + JD, run the agent, validate output, and
+   persist JSONB `agent_output` + `agent_trace`.
+4. `GET /api/v1/matches/{id}` returns job status and full structured output when
+   `completed`, or error details when `failed`.
+
+## Job State Machine
+
+- States: `pending -> processing -> completed` or `failed`.
+- Transitions:
+  - `pending -> processing` on atomic claim.
+  - `processing -> completed` on successful schema validation + persistence.
+  - `processing -> pending` on retryable failure with backoff.
+  - `processing -> failed` on max attempts or non-retryable errors.
+- Job fields: `status`, `attempts`, `last_error`, `next_run_at`, `updated_at`.
+
+## Queue/Worker Semantics
+
+- Claiming: DB-backed job table with `SELECT ... FOR UPDATE SKIP LOCKED` to
+  ensure race-safe claiming and allow 2+ concurrent workers.
+- Concurrency: workers poll for `pending` jobs whose `next_run_at <= now()`.
+- Idempotency: jobs are keyed by `job_id`; writes are conditional on job state.
+
+## Retry and Failure Policy
+
+- Max attempts: 3 total.
+- Backoff: exponential (example: 1m, 5m, 15m) before retrying.
+- Non-retryable: schema validation errors, prompt injection detection,
+  unsupported JD formats, or missing required inputs.
+- Failed jobs persist `last_error` and partial `agent_trace`.
+
+## Data Model
+
+- `candidates`: `id`, `created_at`, `profile_jsonb` (skills, experience,
+  education, projects, optional location).
+- `match_jobs`: `id`, `candidate_id`, `jd_source`, `status`, `attempts`,
+  `next_run_at`, `last_error`, `created_at`, `updated_at`.
+- `match_results`: `job_id`, `agent_output_jsonb`, `agent_trace_jsonb`,
+  `completed_at`.
+- Optional `jd_cache`: `jd_url`, `content_hash`, `requirements_jsonb`,
+  `last_fetched_at`, `expires_at`.
 
 ## Confidence heuristic
 
@@ -132,14 +173,44 @@ asynchronously and can be queried by status.
 
 ## Agent Notes
 
-- Tools:
-- Failure handling:
-- Termination condition:
+- Tools: JD fetcher (if URL), extraction tool, scoring, curated resource lookup.
+- Failure handling: tool timeouts treated as retryable; validation failures are
+  non-retryable.
+- Termination condition: stop when score + gaps + resources are valid, or when
+  retry budget is exhausted.
 
 ## Ops
 
-- Observability:
-- Retry/dead-letter:
+- Observability: structured logs per `job_id` with tool calls, state transitions,
+  latency, and token counts.
+- Retry/dead-letter: 3 attempts max; failures remain queryable with errors.
+
+## AI Safety Boundary
+
+- Treat external JD content as untrusted input.
+- Strip or ignore instructions inside scraped content.
+- Disallow tool/system override and constrain tool usage to a whitelist.
+
+## Resource/Cost Controls
+
+- Per job caps on tokens, tool calls, and wall-clock timeouts.
+- Hard stop when budget is exhausted; job fails with error detail.
+
+## Governance Basics
+
+- Store only job-relevant fields.
+- Retention policy: delete candidate data after a fixed window (example: 30 days).
+- Access logs for reads/writes; encryption at rest and TLS in transit.
+
+## Implementation Process
+
+1. Define schemas (Pydantic) and DB migrations for `candidates`, `match_jobs`,
+   and `match_results`.
+2. Implement `POST /candidates` and `POST /matches` with job creation + enqueue.
+3. Build worker job claiming + execution loop with retries and validation.
+4. Implement `GET /matches/{id}` with status and output payload.
+5. Add observability (structured logs, basic metrics).
+6. Add safety limits (timeouts, token budgets, tool whitelists).
 
 ## Out of Scope
 
