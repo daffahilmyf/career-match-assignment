@@ -62,9 +62,9 @@ in this README.
 
 ## Delivery
 
-Container delivery is handled by the `Docker Image` GitHub Actions workflow.
-It builds the repository `Dockerfile` and publishes the image to GitHub
-Container Registry as `ghcr.io/daffahilmyf/career-match-assignment`.
+Container delivery is handled by the `Docker Image` GitHub Actions workflow. It
+builds the repository `Dockerfile` and publishes the image to GitHub Container
+Registry as `ghcr.io/daffahilmyf/career-match-assignment`.
 
 Important constraints:
 
@@ -73,6 +73,31 @@ Important constraints:
   `LLM_MODEL` are not stored in the workflow
 - deployment-time environment configuration must be provided by the runtime
   platform, not baked into the image
+
+## Draft Future Scaling
+
+The current implementation is intentionally compact: FastAPI, PostgreSQL, and a
+worker process are enough for the assignment scope. If this system needed to
+scale into a higher-throughput production architecture, the next evolution would
+likely look like this draft:
+
+![Draft future scaling architecture](docs/assets/future-scaling-draft.png)
+
+Key ideas in this draft:
+
+- direct client upload of resumes or JD PDFs to object storage via presigned
+  URLs
+- an API gateway in front of a horizontally scalable matching service layer
+- durable job delivery via NATS JetStream instead of in-process polling only
+- Redis for short-TTL cache, deduplication, and coordination
+- workers scaled independently from the API tier
+- persisted job state, retries, traces, and outputs kept in the matching
+  database
+- observability as a first-class deployment concern
+
+This is a draft future-state architecture for discussion. It is not the current
+runtime design, and it would be refined collaboratively in a working session
+based on throughput, reliability, and operational requirements.
 
 ## What Is Implemented
 
@@ -544,8 +569,8 @@ Integration test:
 uv run pytest tests/test_integration_flow.py -m integration
 ```
 
-The integration test is environment-gated. Before running it manually, make
-sure these are available:
+The integration test is environment-gated. Before running it manually, make sure
+these are available:
 
 - a reachable PostgreSQL database via `DATABASE_URL`
 - LLM settings such as `LLM_PROVIDER`, `LLM_MODEL`, and `LLM_API_KEY`
