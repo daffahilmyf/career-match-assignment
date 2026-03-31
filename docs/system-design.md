@@ -2,266 +2,441 @@
 
 ## Overview
 
-The system ingests a candidate profile and one or more job descriptions, runs an
-agent to score fit and generate a learning plan, and stores the structured
-results. An API and background workers coordinate the workflow so jobs run
-asynchronously and can be queried by status.
+Pelgo ingests a candidate resume, stores a structured candidate profile in
+PostgreSQL, accepts one or more job descriptions, and runs an LLM-driven agentic
+matching pipeline asynchronously. The pipeline extracts JD requirements, scores
+candidate fit, prioritizes skill gaps, researches learning resources, and stores
+a validated structured result with an orchestrator-generated `agent_trace`.
 
-## Known Information
+The system is split into:
+- a FastAPI API for ingestion and job submission
+- a Postgres-backed async job queue
+- out-of-process workers that execute the agent
+- a LangGraph orchestrator with typed state and tool sequencing
 
-- The system must score a candidate against one or more job descriptions and
-  produce a structured learning plan.
-- The agent output schema follows the Pelgo assignment documentation and must be
-  validated JSON with an orchestrator-populated agent_trace.
-- The API surface includes candidate ingestion, match submission, and match
-  status/query endpoints.
-- Agent runs are async jobs processed by out-of-process workers with safe job
-  claiming and retries.
-- The data store is PostgreSQL with structured candidate profiles and JSONB
-  match outputs.
+## Implemented Scope
 
-## Assumptions
+### Part A
 
-- Fairness considerations are addressed as a best-effort internal quality goal,
-  even though they are not explicitly required by the assignment.
-- Candidate profile fields are limited to those needed for scoring (skills,
-  experience, seniority signals) and can be expanded later.
-- Shared caching of identical JD URLs across candidates is optional and can be
-  deferred if it complicates correctness or isolation.
-- Job description URLs are assumed to be publicly accessible job posting pages
-  provided by the user (no guarantee of a specific provider).
-- Prompt-injection guardrails are applied to external content (JD URLs and web
-  resources) to prevent instructions from overriding system or tool policies,
-  including malicious or bad-actor prompt injection.
+Implemented:
+- LangGraph-based orchestration with typed `AgentState`
+- Four required tools:
+  - `extract_jd_requirements`
+  - `score_candidate_against_requirements`
+  - `prioritise_skill_gaps`
+  - `research_skill_resources`
+- Structured final output per assignment schema
+- Real `agent_trace` populated by orchestration/runtime state
+- Failure handling for timeout, invalid tool output, and low-confidence flow
 
-**To answer ambiguity #1**
+Not implemented:
+- Google ADK stretch tool
+- frontend as a scored deliverable; any UI is optional and out of scope for the core backend
 
-- Assumption: The agent follows a minimal sequence: extract requirements ->
-  score candidate -> prioritize gaps -> only research top gaps.
-- Reason: Keeps orchestration predictable and testable.
-- Risk: May miss useful context.
-- Mitigation: Allow an extra research step when confidence is low.
+### Part B
 
-**To answer ambiguity #2**
+Implemented:
+- `POST /api/v1/candidate`
+- `POST /api/v1/matches`
+- `GET /api/v1/matches/{id}`
+- `GET /api/v1/matches`
+- Postgres migrations and seed script
+- out-of-process worker process
+- race-safe job claiming using `FOR UPDATE SKIP LOCKED`
+- retries with terminal failure after 3 attempts
+- Docker Compose stack
 
-- Assumption: The agent stops once it has a validated score, prioritized gaps,
-  and resources for the top gaps, or after a bounded retry budget.
-- Reason: Balances cost with completeness.
-- Risk: Early stop on thin JDs.
-- Mitigation: Low confidence triggers a retry or follow-up research.
-
-**To answer ambiguity #3**
-
-- Assumption: A tool is considered failed on timeout, schema validation error,
-  or empty result.
-- Reason: Failure modes are observable and actionable.
-- Risk: False positives on partial data.
-- Mitigation: Retry once and proceed with partial data if allowed by schema.
-
-**To answer ambiguity #4**
-
-- Assumption: If multiple jobs reference the same JD URL and the content has not
-  drifted, the extracted requirements can be cached and reused. Drift is
-  detected via a content hash or `Last-Modified` checks, with retention
-  thresholds preferred over real-time checks to control cost.
-- Reason: Improves performance for repeated JDs.
-- Risk: Stale requirements.
-- Mitigation: Refresh on hash change or age threshold.
-
-**To answer ambiguity #5**
-
-- Assumption: The profile focuses on recruiter-relevant fields I have seen in
-  practice (Japan): skills, experience history, education/degree, and projects.
-  Supplemental fields like location are included only when they influence
-  eligibility (for example, visa constraints).
-- Reason: Keeps the schema aligned with scoring signals.
-- Risk: Missing niche signals.
-- Mitigation: Allow schema extensions as new requirements appear.
-
-## Core Functionality
-
-- Should ingest a candidate resume (PDF or text), extract a structured profile,
-  and store it in Postgres.
-- Should accept up to 10 job descriptions per request (text or URL), enqueue one
-  agent run per JD, and return job IDs immediately.
-- Should run an agent that extracts requirements, scores candidate fit,
-  prioritizes gaps, and builds a learning plan with real resources.
-- Should persist the full structured agent output (including agent_trace) and
-  expose status and results via API.
-
-## Non-Functional Requirements
-
-- Reliability: tool errors or timeouts must not crash workers, jobs retry and
-  move to failed after max attempts. Measurement: a failing job retries up to 3
-  times, then transitions to `failed` with error detail.
-- Observability: structured logs for job ID, tool calls, status transitions, and
-  LLM latency/tokens. Measurement: each job run emits log entries with `job_id`,
-  `tool_calls`, `status_transition`, and `llm_latency_ms`.
-- Correctness: agent outputs must be schema-validated before persistence.
-  Measurement: invalid agent output never reaches the database; schema
-  validation failure triggers retry or `failed`.
-- Fairness (non-required): scoring should avoid obvious bias from protected
-  attributes and focus on job-relevant skills and experience only. Measurement:
-  inputs and outputs are reviewed to ensure protected attributes are excluded
-  from scoring features.
-
-## Stack
-
-- Backend: Python API (FastAPI), Pydantic models.
-- Orchestrator: Mentioned in reqs (but we can keep elaborate)
-- Database: PostgreSQL with Alembic migrations.
-- Queue/Workers: Out-of-process workers (implementation TBD).
-- Frontend: Minimal web UI for upload, submit, and polling.
+Extra operational endpoints/features:
+- `GET /health`
+- `POST /api/v1/matches/{job_id}/requeue`
+- structured worker and JD extraction logging
+- lightweight candidate PII redaction before LLM execution
 
 ## Architecture
 
-- API service
-- Agent orchestrator
-- Worker(s)
-- Database
+### Services
+
+- `api`
+  - FastAPI service in `src/pelgo/api/app.py`
+  - validates input, stores candidates, enqueues match jobs, and returns status/results
+- `worker`
+  - background job runner in `src/pelgo/application/services/worker.py`
+  - claims pending jobs and runs the LangGraph agent
+- `postgres`
+  - stores candidate profiles, match jobs, cached JD extractions, and final agent output
+
+### Internal Layers
+
+- `src/pelgo/domain/`
+  - canonical output models and shared types
+- `src/pelgo/application/orchestration/`
+  - typed state, LangGraph routing, orchestration factory
+- `src/pelgo/application/bootstrap/`
+  - LLM, tool, and PII wiring
+- `src/pelgo/adapters/tools/`
+  - concrete tool implementations
+- `src/pelgo/adapters/persistence/`
+  - Postgres repository
+- `src/pelgo/ports/`
+  - persistence, LLM, PII, and tooling ports
+
+## API Contract
+
+### `POST /api/v1/candidate`
+
+Purpose:
+- ingest a candidate resume and store a structured candidate profile
+
+Current input contract:
+- multipart form data
+- exactly one of:
+  - `resume_text`
+  - `resume_pdf`
+
+Behavior:
+- PDF text is extracted with `pypdf`
+- candidate profile extraction is LLM-first
+- if LLM extraction fails, a heuristic parser is used as fallback
+- stored profile is structured JSON, not a raw blob
+
+Current candidate profile fields:
+- `name`
+- `email`
+- `skills`
+- `education`
+- `experience`
+- `years_experience`
+
+### `POST /api/v1/matches`
+
+Purpose:
+- accept up to 10 JDs for an existing candidate and enqueue one job per JD
+
+Input:
+- `candidate_id`
+- `jd_sources[]`
+
+JD source types supported:
+- raw JD text
+- JD URL
+
+Response:
+- immediate list of `job_id` values with `pending` status
+
+### `GET /api/v1/matches/{id}`
+
+Purpose:
+- fetch one job’s status and final structured output
+
+Status values:
+- `pending`
+- `processing`
+- `completed`
+- `failed`
+
+Response behavior:
+- completed jobs expose final result in `result`
+- failed jobs expose top-level `agent_trace` if no final result exists
+
+### `GET /api/v1/matches`
+
+Purpose:
+- paginated list of jobs with optional status filter
+
+Required query params:
+- `limit`
+- `offset`
 
 ## Data Flow
 
-1. `POST /api/v1/candidates` ingests a resume (PDF/text), extracts a structured
-   profile, and stores it in Postgres. Returns `candidate_id`.
-2. `POST /api/v1/matches` accepts up to 10 JDs (text or URL). Creates one
-   `match_job` per JD, enqueues work, and returns `job_ids` in `pending`.
-3. Workers claim jobs, load candidate + JD, run the agent, validate output, and
-   persist JSONB `agent_output` + `agent_trace`.
-4. `GET /api/v1/matches/{id}` returns job status and full structured output when
-   `completed`, or error details when `failed`.
+1. Candidate resume is submitted to `POST /api/v1/candidate`.
+2. API extracts or reads resume text, builds a structured candidate profile, and stores it.
+3. Client submits up to 10 JD sources to `POST /api/v1/matches`.
+4. API creates one `match_job` row per JD source with status `pending`.
+5. Worker claims a pending job atomically.
+6. Worker sanitizes candidate context and executes the LangGraph agent.
+7. Agent runs tools at runtime, builds a validated final result, and persists it.
+8. Client polls `GET /api/v1/matches/{id}` for status and final output.
+
+## Orchestration Design
+
+Primary orchestrator:
+- LangGraph
+
+Typed state:
+- `AgentState` managed by LangGraph
+
+Core flow:
+1. extract JD requirements
+2. score candidate against requirements
+3. if gaps exist, prioritize them
+4. if confidence is low or resources are still needed, research a bounded subset of gaps
+5. assemble final result
+
+### Runtime sequencing
+
+The sequence is not hardcoded as a single fixed linear run. The graph routes based
+on current state:
+- missing requirements -> extract requirements
+- missing score -> score candidate
+- low confidence with gaps -> prioritize + research
+- no remaining researchable gaps -> assemble result
+
+### Termination condition
+
+The graph assembles a result when:
+- requirements and score exist
+- no further bounded research is needed, or
+- research is exhausted/time-capped, or
+- confidence and gathered evidence are sufficient
+
+## Tool Design
+
+### `extract_jd_requirements`
+
+Input:
+- raw JD text or URL
+
+Output:
+- `required_skills`
+- `nice_to_have_skills`
+- `seniority_level`
+- `domain`
+- `responsibilities`
+
+Current behavior:
+- raw text: sent directly to the LLM extractor
+- URL: fetched with `requests`, cleaned, then sent to the LLM extractor
+- URL outputs are cached in `jd_cache`
+- output is schema-validated before use
+
+Failure behavior:
+- malformed output: retried, then treated as failure
+- URL timeout: treated as explicit JD URL failure
+- blocked URL (e.g. HTTP 403): treated as explicit JD URL failure
+- raw-text extraction failure: can fall back to empty/default requirements
+- URL extraction failure does not silently produce an empty successful result
+
+Current limitation:
+- JS-rendered or bot-protected job pages may fail
+
+### `score_candidate_against_requirements`
+
+Output:
+- `overall_score`
+- `dimension_scores`
+- `matched_skills`
+- `gap_skills`
+- `confidence`
+
+Confidence heuristic is derived from observable signals:
+- JD completeness
+- required skill coverage
+- experience alignment
+- seniority alignment
+- domain overlap
+
+### `prioritise_skill_gaps`
+
+Output:
+- ranked skill gaps with:
+  - `skill`
+  - `priority_rank`
+  - `estimated_match_gain_pct`
+  - `rationale`
+
+Behavior:
+- LLM-first ranking
+- heuristic fallback if the LLM path fails
+- includes every gap exactly once
+
+### `research_skill_resources`
+
+Output:
+- resources with:
+  - `title`
+  - `url`
+  - `estimated_hours`
+  - `type`
+- `relevance_score`
+
+Behavior:
+- makes real external calls
+- uses MIT OpenCourseWare API and web lookup/reranking
+- URL/title/body heuristics rerank candidate resources
+- resources are bounded by configured top-gap and time limits
+
+Current limitation:
+- resource quality is still heuristic and uneven for some practical skills
+
+## Failure Handling
+
+Implemented failure modes:
+
+### Tool timeout
+
+- tool call wrapper records failure in trace
+- timeout can trigger retry or fallback depending on the node
+- research timeout falls back to a search resource rather than crashing the job
+
+### Invalid tool output
+
+- output is schema-validated after tool execution
+- malformed output is treated as a failed tool call
+- retries/fallbacks depend on the node and input type
+
+### Low confidence score
+
+- low confidence does not silently terminate
+- low confidence triggers gap prioritization and targeted resource research before final assembly
+
+### Final worker failure policy
+
+- max attempts: 3
+- backoff schedule:
+  - 60s
+  - 300s
+  - 900s
+- after the 3rd failure, the job moves to `failed`
+- partial `agent_trace` is persisted with the error
 
 ## Job State Machine
 
-- States: `pending -> processing -> completed` or `failed`.
-- Transitions:
-  - `pending -> processing` on atomic claim.
-  - `processing -> completed` on successful schema validation + persistence.
-  - `processing -> pending` on retryable failure with backoff.
-  - `processing -> failed` on max attempts or non-retryable errors.
-- Job fields: `status`, `attempts`, `last_error`, `next_run_at`, `updated_at`.
+States:
+- `pending`
+- `processing`
+- `completed`
+- `failed`
 
-## Queue/Worker Semantics
+Transitions:
+- `pending -> processing` on atomic claim
+- `processing -> completed` on validated result persistence
+- `processing -> pending` on retryable failure before max attempts
+- `processing -> failed` after 3 attempts
 
-- Claiming: DB-backed job table with `SELECT ... FOR UPDATE SKIP LOCKED` to
-  ensure race-safe claiming and allow 2+ concurrent workers.
-- Concurrency: workers poll for `pending` jobs whose `next_run_at <= now()`.
-- Idempotency: jobs are keyed by `job_id`; writes are conditional on job state.
+Current dead-letter interpretation:
+- terminal failed jobs remain in the same Postgres table with error detail and trace
+- this is a terminal failed state, not a separate DLQ table or broker queue
 
-## Retry and Failure Policy
+## Queue and Worker Semantics
 
-- Max attempts: 3 total.
-- Backoff: exponential (example: 1m, 5m, 15m) before retrying.
-- Non-retryable: schema validation errors, prompt injection detection,
-  unsupported JD formats, or missing required inputs.
-- Failed jobs persist `last_error` and partial `agent_trace`.
+Queue implementation:
+- Postgres-backed job table
+
+Claiming:
+- `SELECT ... FOR UPDATE SKIP LOCKED`
+
+Concurrency:
+- 2+ workers can process concurrently without duplicate claims
+
+Observability:
+- worker logs include:
+  - `worker.started`
+  - `worker.idle`
+  - `job.claimed`
+  - `job.completed`
+  - `job.failed`
+- logs include worker host/pid, job IDs, tool calls, LLM latency, and token usage
 
 ## Data Model
 
-- `candidates`: `id`, `created_at`, `profile_jsonb` (skills, experience,
-  education, projects, optional location).
-- `match_jobs`: `id`, `candidate_id`, `jd_source`, `status`, `attempts`,
-  `next_run_at`, `last_error`, `created_at`, `updated_at`.
-- `match_results`: `job_id`, `agent_output_jsonb`, `agent_trace_jsonb`,
-  `completed_at`.
-- Optional `jd_cache`: `jd_url`, `content_hash`, `requirements_jsonb`,
-  `last_fetched_at`, `expires_at`.
+### `candidates`
+- candidate ID
+- structured profile JSON
+- timestamps
 
-## Confidence heuristic
+### `match_jobs`
+- job ID
+- candidate ID
+- original JD source
+- status
+- attempts
+- next run time
+- last error
+- agent output JSON
+- agent trace JSON
+- timestamps
 
-- TBD
+### `jd_cache`
+- JD URL
+- content hash
+- structured extracted requirements
+- timestamps
 
-## Agent Notes
+Query support:
+- all jobs for a candidate
+- jobs by status
+- trace/output for a specific job
 
-- Tools: JD fetcher (if URL), extraction tool, scoring, curated resource lookup.
-- Failure handling: tool timeouts treated as retryable; validation failures are
-  non-retryable.
-- Termination condition: stop when score + gaps + resources are valid, or when
-  retry budget is exhausted.
+## Privacy and Safety
 
-## Ops
+### Candidate context
 
-- Observability: structured logs per `job_id` with tool calls, state transitions,
-  latency, and token counts.
-- Retry/dead-letter: 3 attempts max; failures remain queryable with errors.
+Before candidate data is sent to the LLM:
+- direct PII is sanitized with a lightweight redactor
+- structured matching-relevant fields remain available
 
-## AI Safety Boundary
+This is a pragmatic privacy guardrail, not full compliance-grade PII handling.
 
-- Treat external JD content as untrusted input.
-- Strip or ignore instructions inside scraped content.
-- Disallow tool/system override and constrain tool usage to a whitelist.
+### External content
 
-## Resource/Cost Controls
+JD URL content and web resource content are treated as untrusted input.
+The system does not allow external content to override tool or orchestration logic.
 
-- Per job caps on tokens, tool calls, and wall-clock timeouts.
-- Hard stop when budget is exhausted; job fails with error detail.
+## Configuration
 
-## Governance Basics
+Current key settings:
+- `DATABASE_URL`
+- `LLM_PROVIDER`
+- `LLM_API_KEY`
+- `LLM_MODEL`
+- `TOP_GAP_LIMIT`
+- `RESEARCH_TIME_CAP_SECONDS`
+- `MIT_COURSE_LIMIT`
+- `WORKER_POLL_INTERVAL_SECONDS`
+- `CANDIDATE_PDF_MAX_BYTES`
 
-- Store only job-relevant fields.
-- Retention policy: delete candidate data after a fixed window (example: 30 days).
-- Access logs for reads/writes; encryption at rest and TLS in transit.
+## Docker / Local Run
 
-## Implementation Process
+Current Compose model:
+- `db`
+- `api`
+- `worker`
+- `migrate`
 
-1. Define schemas (Pydantic) and DB migrations for `candidates`, `match_jobs`,
-   and `match_results`.
-2. Implement `POST /candidates` and `POST /matches` with job creation + enqueue.
-3. Build worker job claiming + execution loop with retries and validation.
-4. Implement `GET /matches/{id}` with status and output payload.
-5. Add observability (structured logs, basic metrics).
-6. Add safety limits (timeouts, token budgets, tool whitelists).
+Workers can be scaled with:
+```bash
+docker compose up --build --scale worker=2
+```
 
-## Phased Plan
+This is the intended way to verify concurrent out-of-process processing.
 
-**Part A: Agentic Career Intelligence (Primary)**
+## Testing Status
 
-**Phase A1: Agent Core + State**
-- Define typed `AgentState` and Pydantic models for all tool inputs/outputs.
-- Implement `agent_trace` contract and validation.
-- Add normalization rules (skills lists, learning plan constraints).
+Implemented coverage includes:
+- API validation
+- candidate profile extraction normalization
+- LangGraph routing and failure behavior
+- match status response shape
+- PII redaction
+- resource selection
+- worker partial-trace persistence on failure
+- JD URL extraction path
 
-**Phase A2: Tool Suite (4 required tools)**
-- `extract_jd_requirements`: handle URL/text input; schema-validate output.
-- `score_candidate_against_requirements`: compute scores + confidence heuristic.
-- `prioritise_skill_gaps`: rank gaps with rationale and estimated gain.
-- `research_skill_resources`: real external call and resource mapping.
-- Add caching for JD extraction and resource lookup where useful.
+There is also an integration test for the full lifecycle, but it is environment-gated.
 
-**Phase A3: Orchestration + Failure Handling**
-- Build LangGraph pipeline with runtime tool sequencing.
-- Add tool call wrapper with trace capture, latency, and error recording.
-- Handle failure modes: timeout, invalid tool output, low confidence.
-- Termination condition: stop after validated score + prioritized gaps + top resources.
+## Current Limitations
 
-**Phase A4: Output Assembly**
-- Build final JSON output per A3 schema.
-- Enforce schema validation before persistence.
+- README and submission documentation may lag behind the code if not updated together.
+- JD URL extraction still fails on blocked or JS-heavy sites.
+- candidate `years_experience` is improved on the LLM path, but heuristic fallback remains conservative and simple.
+- resource relevance is still heuristic for some applied tooling skills.
+- there is no separate broker or external DLQ; Postgres is both source of truth and job queue.
 
-**Part B: Async Infrastructure (Supporting)**
+## Future Work
 
-**Phase B1: Data Model + Migrations**
-- Design tables: `candidates`, `match_jobs`, `match_results`, optional `jd_cache`.
-- Add Alembic migrations + seed script.
-
-**Phase B2: Worker + Queue Semantics**
-- Implement out-of-process worker loop.
-- Race-safe job claiming (`SKIP LOCKED` or atomic update).
-- Retry policy (max 3) + dead-letter on failure with error detail.
-
-**Phase B3: API Surface**
-- `POST /api/v1/candidate`: ingest + extract profile.
-- `POST /api/v1/matches`: enqueue jobs for each JD.
-- `GET /api/v1/matches/{id}`: status + output.
-- `GET /api/v1/matches`: pagination + status filter.
-
-**Phase B4: Quality & Ops**
-- Integration test for full lifecycle.
-- Structured logging (job_id, tool calls, status transitions).
-- Docker compose for local run; ensure seed script works.
-
-## Out of Scope
-
-- Full GDPR/CCPA compliance or PII complience (beyond minimal data handling).
-- Handling JD URLs that block scraping or require authentication/paywalls.
-- Enterprise-grade fairness audits or bias tooling.
+- tighten heuristic fallback parsing for candidate experience
+- improve JD page extraction with a more robust text extraction pipeline
+- make resource reranking more semantic and less lexical
+- add a dedicated DLQ table for terminal failures
+- optionally add a broker/event stream such as NATS JetStream for higher-throughput future architectures while keeping Postgres as the source of truth
