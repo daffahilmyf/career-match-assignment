@@ -5,15 +5,23 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from pelgo.api.app import create_app
+from conftest import ApiTestSettings
 
 
-class _FakeRepo:
+class FakeMatchRepo:
     def __init__(self, engine: object, record: SimpleNamespace) -> None:
         self.engine = engine
         self._record = record
 
     def get_match_result(self, job_id: str):
         return self._record
+
+
+def _build_client(monkeypatch, record: SimpleNamespace) -> TestClient:
+    monkeypatch.setattr("pelgo.api.app.AppSettings", lambda: ApiTestSettings())
+    monkeypatch.setattr("pelgo.api.app.create_pg_engine", lambda database_url: object())
+    monkeypatch.setattr("pelgo.api.app.PostgresJobRepository", lambda engine: FakeMatchRepo(engine, record))
+    return TestClient(create_app())
 
 
 def test_get_match_hides_top_level_agent_trace_when_result_exists(monkeypatch) -> None:
@@ -35,17 +43,14 @@ def test_get_match_hides_top_level_agent_trace_when_result_exists(monkeypatch) -
         last_error=None,
     )
 
-    monkeypatch.setattr("pelgo.api.app.AppSettings", lambda: SimpleNamespace(database_url="postgresql://test"))
-    monkeypatch.setattr("pelgo.api.app.create_pg_engine", lambda database_url: object())
-    monkeypatch.setattr("pelgo.api.app.PostgresJobRepository", lambda engine: _FakeRepo(engine, record))
-
-    client = TestClient(create_app())
+    client = _build_client(monkeypatch, record)
     response = client.get("/api/v1/matches/job-1")
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["result"]["agent_trace"]["tool_calls"]
     assert payload["agent_trace"] is None
+
 
 
 def test_get_match_exposes_top_level_agent_trace_when_result_missing(monkeypatch) -> None:
@@ -57,11 +62,7 @@ def test_get_match_exposes_top_level_agent_trace_when_result_missing(monkeypatch
         last_error="tool failed",
     )
 
-    monkeypatch.setattr("pelgo.api.app.AppSettings", lambda: SimpleNamespace(database_url="postgresql://test"))
-    monkeypatch.setattr("pelgo.api.app.create_pg_engine", lambda database_url: object())
-    monkeypatch.setattr("pelgo.api.app.PostgresJobRepository", lambda engine: _FakeRepo(engine, record))
-
-    client = TestClient(create_app())
+    client = _build_client(monkeypatch, record)
     response = client.get("/api/v1/matches/job-2")
 
     assert response.status_code == 200
