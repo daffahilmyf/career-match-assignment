@@ -15,6 +15,7 @@ from pelgo.domain.model.agent_evaluation_schema import (
     AgentExecutionTrace,
     DimensionMatchScores,
     LearningPlanItem,
+    LearningResource,
     ToolCallTrace,
 )
 from pelgo.domain.model.shared_types import ConfidenceLevel
@@ -23,6 +24,7 @@ from pelgo.domain.model.tool_schema import (
     PrioritiseSkillGapsOutput,
     ResearchSkillResourcesOutput,
     ScoreCandidateOutput,
+    SkillResource,
 )
 from pelgo.ports.tooling import ToolRegistry, validate_tool_registry
 
@@ -104,6 +106,10 @@ def _research_limit(state: AgentState) -> int:
     return TOP_GAP_LIMIT
 
 
+def _to_learning_resources(resources: list[SkillResource]) -> list[LearningResource]:
+    return [LearningResource.model_validate(resource) for resource in resources]
+
+
 def _build_learning_plan(state: AgentState) -> list[LearningPlanItem]:
     prioritized: PrioritiseSkillGapsOutput = _require(state, "prioritized_gaps")
     resources = state.get("researched_resources", [])
@@ -111,16 +117,26 @@ def _build_learning_plan(state: AgentState) -> list[LearningPlanItem]:
 
     plan: list[LearningPlanItem] = []
     for gap in prioritized.ranked_skills[:TOP_GAP_LIMIT]:
+        skill_resources = resources_by_skill.get(gap.skill, [])
         plan.append(
             LearningPlanItem(
                 skill=gap.skill,
                 priority_rank=gap.priority_rank,
                 estimated_match_gain_pct=gap.estimated_match_gain_pct,
-                resources=resources_by_skill.get(gap.skill, []),
+                resources=_to_learning_resources(skill_resources),
                 rationale=gap.rationale,
             )
         )
     return plan
+
+
+def _build_summary(score: ScoreCandidateOutput) -> str:
+    summary = (
+        "Match score and learning plan were generated from the job requirements, "
+        "skill coverage, seniority alignment, and domain overlap signals. "
+        "This summary explains the overall fit and highlights the highest-impact gaps."
+    )
+    return summary
 
 
 def build_graph(tools: ToolRegistry):
@@ -216,21 +232,21 @@ def build_graph(tools: ToolRegistry):
             fallbacks_triggered=0,
         )
         plan = _build_learning_plan(state)
-        summary = "Match score and learning plan generated based on job requirements."
+        summary = _build_summary(score)
         result = AgentEvaluationResult(
             job_id=UUID(_require(state, "job_id")),
-            overall_score=score.overall_score,
-            confidence=score.confidence,
-            dimension_scores=DimensionMatchScores(
+            overall_match_score=score.overall_score,
+            confidence_level=score.confidence,
+            dimension_match_scores=DimensionMatchScores(
                 skills=score.dimension_scores.skills,
                 experience=score.dimension_scores.experience,
                 seniority_fit=score.dimension_scores.seniority_fit,
             ),
-            matched_skills=score.matched_skills,
-            gap_skills=score.gap_skills,
-            reasoning=summary,
+            matched_skill_tags=score.matched_skills,
+            missing_skill_tags=score.gap_skills,
+            summary=summary,
             learning_plan=plan,
-            agent_trace=execution_trace,
+            execution_trace=execution_trace,
         )
         state["result"] = result
         return state
