@@ -17,3 +17,14 @@ def build_llm_client(settings: AppSettings | None = None) -> LLMClient:
             model=settings.llm_model,
         )
     return NullLLMClient()
+
+
+def require_llm_client(settings: AppSettings | None = None) -> LLMClient:
+    settings = settings or AppSettings()
+    provider = (settings.llm_provider or "").lower()
+    if provider in {"", "none", "null"}:
+        raise RuntimeError("LLM_PROVIDER must be set for LLM-only mode")
+    client = build_llm_client(settings)
+    if isinstance(client, NullLLMClient):
+        raise RuntimeError("LLM client is not configured")
+    return client

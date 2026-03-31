@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Type, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from langchain_openai import ChatOpenAI
 
@@ -18,7 +18,7 @@ class LangChainOpenAIClient(LLMClient):
     model: str
 
     def complete_json(self, prompt: str, schema: Type[BaseModelT]) -> BaseModelT:
-        model = ChatOpenAI(model=self.model, api_key=self.api_key)
+        model = ChatOpenAI(model=self.model, api_key=SecretStr(self.api_key))
         structured = model.with_structured_output(schema)
         result = structured.invoke(prompt)
         if isinstance(result, schema):
