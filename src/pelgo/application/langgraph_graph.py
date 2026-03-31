@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Iterable, Type, TypeVar, TYPE_CHECKING, cast
+from typing import Iterable, Type, TypeVar, cast
 from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from pelgo.application.state import AgentState
 from pelgo.domain.model.agent_evaluation_schema import ToolCallTrace
+from pelgo.domain.model.shared_types import ConfidenceLevel
 from pelgo.domain.model.tool_schema import (
     ExtractJDRequirementsOutput,
     PrioritiseSkillGapsOutput,
@@ -20,6 +21,7 @@ from pelgo.domain.model.tool_schema import (
 from pelgo.ports.tooling import ToolRegistry, validate_tool_registry
 
 TOP_GAP_LIMIT = 3
+RESEARCH_TIME_CAP_SECONDS = 25
 
 BaseModelT = TypeVar("BaseModelT", bound=BaseModel)
 
@@ -87,6 +89,15 @@ def _call_tool(
         raise
 
 
+def _research_limit(state: AgentState) -> int:
+    score: ScoreCandidateOutput = _require(state, "score")
+    if score.confidence == ConfidenceLevel.high:
+        return 0
+    if score.confidence == ConfidenceLevel.medium:
+        return 1
+    return TOP_GAP_LIMIT
+
+
 def build_graph(tools: ToolRegistry):
     validate_tool_registry(tools)
 
@@ -130,15 +141,25 @@ def build_graph(tools: ToolRegistry):
         return state
 
     def fanout_gaps(state: AgentState) -> Iterable[Send]:
+        limit = _research_limit(state)
+        if limit == 0:
+            yield Send("collect_resources", {})
+            return
         ranked = _require(state, "prioritized_gaps").ranked_skills
         if not ranked:
             yield Send("collect_resources", {})
             return
+        if "research_started_at" not in state:
+            state["research_started_at"] = time.perf_counter()
         ranked_sorted = sorted(ranked, key=lambda gap: gap.priority_rank)
-        for gap in ranked_sorted[:TOP_GAP_LIMIT]:
+        for gap in ranked_sorted[:limit]:
             yield Send("research_resource", {"gap_skill": gap.skill})
 
     def research_resource(state: AgentState) -> AgentState:
+        started_at = state.get("research_started_at")
+        if started_at is not None:
+            if time.perf_counter() - started_at > RESEARCH_TIME_CAP_SECONDS:
+                return state
         tool = tools["research_skill_resources"]
         payload = tool.input_model(
             skill_name=_require(state, "gap_skill"),
