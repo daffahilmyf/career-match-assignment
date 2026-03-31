@@ -212,6 +212,54 @@ asynchronously and can be queried by status.
 5. Add observability (structured logs, basic metrics).
 6. Add safety limits (timeouts, token budgets, tool whitelists).
 
+## Phased Plan
+
+**Part A: Agentic Career Intelligence (Primary)**
+
+**Phase A1: Agent Core + State**
+- Define typed `AgentState` and Pydantic models for all tool inputs/outputs.
+- Implement `agent_trace` contract and validation.
+- Add normalization rules (skills lists, learning plan constraints).
+
+**Phase A2: Tool Suite (4 required tools)**
+- `extract_jd_requirements`: handle URL/text input; schema-validate output.
+- `score_candidate_against_requirements`: compute scores + confidence heuristic.
+- `prioritise_skill_gaps`: rank gaps with rationale and estimated gain.
+- `research_skill_resources`: real external call and resource mapping.
+- Add caching for JD extraction and resource lookup where useful.
+
+**Phase A3: Orchestration + Failure Handling**
+- Build LangGraph pipeline with runtime tool sequencing.
+- Add tool call wrapper with trace capture, latency, and error recording.
+- Handle failure modes: timeout, invalid tool output, low confidence.
+- Termination condition: stop after validated score + prioritized gaps + top resources.
+
+**Phase A4: Output Assembly**
+- Build final JSON output per A3 schema.
+- Enforce schema validation before persistence.
+
+**Part B: Async Infrastructure (Supporting)**
+
+**Phase B1: Data Model + Migrations**
+- Design tables: `candidates`, `match_jobs`, `match_results`, optional `jd_cache`.
+- Add Alembic migrations + seed script.
+
+**Phase B2: Worker + Queue Semantics**
+- Implement out-of-process worker loop.
+- Race-safe job claiming (`SKIP LOCKED` or atomic update).
+- Retry policy (max 3) + dead-letter on failure with error detail.
+
+**Phase B3: API Surface**
+- `POST /api/v1/candidate`: ingest + extract profile.
+- `POST /api/v1/matches`: enqueue jobs for each JD.
+- `GET /api/v1/matches/{id}`: status + output.
+- `GET /api/v1/matches`: pagination + status filter.
+
+**Phase B4: Quality & Ops**
+- Integration test for full lifecycle.
+- Structured logging (job_id, tool calls, status transitions).
+- Docker compose for local run; ensure seed script works.
+
 ## Out of Scope
 
 - Full GDPR/CCPA compliance or PII complience (beyond minimal data handling).
